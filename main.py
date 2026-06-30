@@ -7,6 +7,7 @@ Version: 1.0.0
 
 import discord
 from discord.ext import commands
+from discord import app_commands
 import os
 from dotenv import load_dotenv
 import asyncio
@@ -22,7 +23,7 @@ class MultipurposeBot(commands.Bot):
         intents.members = True
         
         super().__init__(
-            command_prefix='!',
+            command_prefix=os.getenv("PREFIX", "!"),
             intents=intents,
             help_command=None,
             case_insensitive=True
@@ -36,7 +37,8 @@ class MultipurposeBot(commands.Bot):
         extensions = [
             'cogs.music',
             'cogs.welcome', 
-            'cogs.rpg_game'
+            'cogs.rpg_game',
+            'cogs.role_select'
         ]
         
         for ext in extensions:
@@ -45,31 +47,6 @@ class MultipurposeBot(commands.Bot):
                 print(f'✅ Successfully loaded: {ext}')
             except Exception as e:
                 print(f'❌ Failed to load {ext}: {e}')
-        
-        # Sync slash commands
-        try:
-            await self.tree.sync()
-            print('✅ Slash commands synced globally')
-        except Exception as e:
-            print(f'❌ Failed to sync commands: {e}')
-    
-    async def on_ready(self):
-        """Triggered when bot is ready"""
-        print('='*50)
-        print(f'🤖 Bot Name: {self.user.name}')
-        print(f'🆔 Bot ID: {self.user.id}')
-        print(f'📊 Discord.py Version: {discord.__version__}')
-        print(f'📈 Serving {len(self.guilds)} servers')
-        print('='*50)
-        
-        # Set bot status
-        await self.change_presence(
-            activity=discord.Activity(
-                type=discord.ActivityType.listening,
-                name='!help | Music & RPG'
-            ),
-            status=discord.Status.online
-        )
     
     async def on_message(self, message):
         """Handle messages"""
@@ -82,6 +59,33 @@ class MultipurposeBot(commands.Bot):
 
 # Create bot instance
 bot = MultipurposeBot()
+
+@bot.event
+async def on_ready():
+    """Triggered when bot is ready"""
+    print('='*50)
+    print(f'🤖 Bot Name: {bot.user.name}')
+    print(f'🆔 Bot ID: {bot.user.id}')
+    print(f'📊 Discord.py Version: {discord.__version__}')
+    print(f'📈 Serving {len(bot.guilds)} servers')
+    print('='*50)
+    
+    # Set bot status
+    prefix = os.getenv("PREFIX", "!")
+    await bot.change_presence(
+        activity=discord.Activity(
+            type=discord.ActivityType.listening,
+            name=f'{prefix}help | Music & RPG'
+        ),
+        status=discord.Status.online
+    )
+    
+    # Sync slash commands
+    try:
+        await bot.tree.sync()
+        print('✅ Slash commands synced globally via @bot.event')
+    except Exception as e:
+        print(f'❌ Failed to sync commands: {e}')
 
 # ============ BASIC COMMANDS ============
 
@@ -103,11 +107,12 @@ async def help_command(ctx, category: str = None):
         # Main help menu
         embed = discord.Embed(
             title="🤖 Bot Commands Help",
-            description="Multi-purpose Discord Bot with Music, Welcome System, and RPG Game!\n\n"
+            description="Multi-purpose Discord Bot with Music, Welcome System, RPG Game, and Role Select!\n\n"
                        "Use `!help <category>` for detailed commands:\n"
                        "`!help music` - Music commands\n"
                        "`!help welcome` - Welcome system commands\n"
-                       "`!help rpg` - RPG game commands",
+                       "`!help rpg` - RPG game commands\n"
+                       "`!help rolemenu` - Role menu creation commands",
             color=discord.Color.blue()
         )
         embed.set_footer(text=f"Bot Version {bot.bot_version} | Made with ❤️")
@@ -158,10 +163,20 @@ async def help_command(ctx, category: str = None):
         embed.add_field(name="!rpg heal", value="Heal for 20 gold", inline=False)
         embed.add_field(name="!rpg top", value="View leaderboard", inline=False)
         
+    elif category.lower() == 'rolemenu':
+        embed = discord.Embed(
+            title="🎭 Role Menu Commands",
+            color=discord.Color.blurple()
+        )
+        embed.add_field(name="!rolemenu", value="Show help on creating role menus", inline=False)
+        embed.add_field(name="!rolemenu create button <title> | <emoji> @Role | ...", value="Create a role selection menu using buttons", inline=False)
+        embed.add_field(name="!rolemenu create dropdown <title> | <emoji> @Role | ...", value="Create a role selection menu using a dropdown", inline=False)
+        embed.add_field(name="!rolemenu auto <title> [description]", value="Create an automatic role menu for all manageable server roles", inline=False)
+        
     else:
         embed = discord.Embed(
             title="❌ Category Not Found",
-            description="Available categories: `music`, `welcome`, `rpg`",
+            description="Available categories: `music`, `welcome`, `rpg`, `rolemenu`",
             color=discord.Color.red()
         )
     
