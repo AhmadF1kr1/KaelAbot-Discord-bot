@@ -1,10 +1,12 @@
 """
 RPG Game System Cog
 A full RPG adventure game with classes, battles, and progression
+(Supports Prefix & Slash Commands)
 """
 
 import discord
 from discord.ext import commands
+from discord import app_commands
 import random
 import json
 import os
@@ -109,22 +111,15 @@ class RPG(commands.Cog):
         }
         
         self.monsters = {
-            # Easy (Level 1-10)
             'Slime': {'hp': 30, 'attack': 5, 'defense': 1, 'xp': 15, 'gold': 10, 'level': 1},
             'Rat': {'hp': 20, 'attack': 3, 'defense': 0, 'xp': 10, 'gold': 5, 'level': 1},
             'Bat': {'hp': 25, 'attack': 4, 'defense': 1, 'xp': 12, 'gold': 8, 'level': 2},
-            
-            # Medium (Level 10-25)
             'Goblin': {'hp': 50, 'attack': 10, 'defense': 5, 'xp': 35, 'gold': 25, 'level': 10},
             'Skeleton': {'hp': 65, 'attack': 12, 'defense': 7, 'xp': 45, 'gold': 35, 'level': 15},
             'Dark Mage': {'hp': 55, 'attack': 18, 'defense': 3, 'xp': 50, 'gold': 40, 'level': 18},
-            
-            # Hard (Level 25-50)
             'Orc': {'hp': 100, 'attack': 22, 'defense': 12, 'xp': 80, 'gold': 70, 'level': 25},
             'Wraith': {'hp': 85, 'attack': 28, 'defense': 5, 'xp': 90, 'gold': 85, 'level': 30},
             'Golem': {'hp': 150, 'attack': 18, 'defense': 20, 'xp': 100, 'gold': 95, 'level': 35},
-            
-            # Epic (Level 50+)
             'Demon': {'hp': 200, 'attack': 35, 'defense': 15, 'xp': 150, 'gold': 150, 'level': 50},
             'Phoenix': {'hp': 180, 'attack': 40, 'defense': 10, 'xp': 170, 'gold': 180, 'level': 60},
             'Lich King': {'hp': 250, 'attack': 45, 'defense': 18, 'xp': 200, 'gold': 220, 'level': 70}
@@ -186,7 +181,8 @@ class RPG(commands.Cog):
     
     def format_hp_bar(self, current, maximum, length=20):
         """Create HP bar string"""
-        filled = int(length * current / maximum)
+        if maximum == 0: return "[]"
+        filled = int(length * max(0, current) / maximum)
         bar = '█' * filled + '░' * (length - filled)
         return f"[{bar}]"
     
@@ -196,7 +192,11 @@ class RPG(commands.Cog):
         variation = random.randint(-3, 5)
         return max(1, base_damage + variation)
     
-    @commands.group(name='rpg', invoke_without_command=True)
+    # =========================
+    # HYBRID GROUP START
+    # =========================
+
+    @commands.hybrid_group(name='rpg', invoke_without_command=True)
     async def rpg(self, ctx):
         """RPG Game main command"""
         embed = discord.Embed(
@@ -207,21 +207,21 @@ class RPG(commands.Cog):
         embed.add_field(
             name="📋 Commands",
             value="""
-            `!rpg start` - Begin your adventure
-            `!rpg class <name>` - Choose your class
-            `!rpg profile [@user]` - View character stats
-            `!rpg hunt` - Hunt monsters
-            `!rpg boss` - Fight a boss (1h cooldown)
-            `!rpg dungeon` - Enter a dungeon (3h cooldown)
-            `!rpg shop` - Visit the shop
-            `!rpg buy <item>` - Purchase an item
-            `!rpg sell <item>` - Sell an item
-            `!rpg inventory` - Check your items
-            `!rpg equip <item>` - Equip an item
-            `!rpg daily` - Claim daily reward
-            `!rpg heal` - Heal for 30 gold
-            `!rpg top` - Leaderboard
-            `!rpg duel @user` - Duel another player
+            `/rpg start` - Begin your adventure
+            `/rpg class <name>` - Choose your class
+            `/rpg profile [@user]` - View character stats
+            `/rpg hunt` - Hunt monsters
+            `/rpg boss` - Fight a boss (1h cooldown)
+            `/rpg shop` - Visit the shop
+            `/rpg buy <item>` - Purchase an item
+            `/rpg sell <item>` - Sell an item
+            `/rpg use <item>` - Use a consumable item
+            `/rpg inventory` - Check your items
+            `/rpg equip <item>` - Equip an item
+            `/rpg daily` - Claim daily reward
+            `/rpg heal` - Heal for 30 gold
+            `/rpg top` - Leaderboard
+            `/rpg duel @user` - Duel another player
             """,
             inline=False
         )
@@ -231,20 +231,19 @@ class RPG(commands.Cog):
     @rpg.command(name='start')
     async def start_game(self, ctx):
         """Start your RPG adventure"""
+        if ctx.author.id in self.players:
+            return await ctx.send("❌ You already have a character! Use `/rpg profile` to view it.")
+            
         player = self.get_player(ctx.author.id, ctx.author.name)
-        
-        if player.level > 1:
-            return await ctx.send("❌ You already have a character! Use `!rpg profile` to view it.")
         
         embed = discord.Embed(
             title="🎮 Welcome to the RPG World!",
             description=f"**{ctx.author.name}**, your adventure begins now!\n\n"
-                       f"Choose your class with `!rpg class <name>`\n"
+                       f"Choose your class with `/rpg class <name>`\n"
                        f"Available classes: Warrior, Mage, Archer, Healer",
             color=discord.Color.green()
         )
         
-        # Show class preview
         for class_id, class_info in self.classes.items():
             stats = class_info['stats']
             stats_text = f"❤️ HP: {stats['hp']} | 💎 MP: {stats['mp']}\n"
@@ -259,16 +258,23 @@ class RPG(commands.Cog):
         self.save_data()
     
     @rpg.command(name='class')
+    @app_commands.describe(class_name="The class to choose")
+    @app_commands.choices(class_name=[
+        app_commands.Choice(name="Warrior", value="warrior"),
+        app_commands.Choice(name="Mage", value="mage"),
+        app_commands.Choice(name="Archer", value="archer"),
+        app_commands.Choice(name="Healer", value="healer")
+    ])
     async def select_class(self, ctx, *, class_name: str = None):
         """Choose your character class"""
         player = self.get_player(ctx.author.id)
         
         if not player:
-            return await ctx.send("❌ Start your adventure first with `!rpg start`!")
+            return await ctx.send("❌ Start your adventure first with `/rpg start`!")
         
         if not class_name:
             class_list = ', '.join([f"**{c['name']}**" for c in self.classes.values()])
-            return await ctx.send(f"Available classes: {class_list}\nUse: `!rpg class <name>`")
+            return await ctx.send(f"Available classes: {class_list}\nUse: `/rpg class <name>`")
         
         class_name = class_name.lower()
         if class_name not in self.classes:
@@ -277,7 +283,6 @@ class RPG(commands.Cog):
         selected_class = self.classes[class_name]
         stats = selected_class['stats']
         
-        # Apply class stats
         player.class_type = selected_class['name']
         player.max_hp = stats['hp']
         player.hp = stats['hp']
@@ -302,6 +307,7 @@ class RPG(commands.Cog):
         self.save_data()
     
     @rpg.command(name='profile')
+    @app_commands.describe(member="The user to view profile of")
     async def profile(self, ctx, member: discord.Member = None):
         """View RPG profile"""
         if member is None:
@@ -311,11 +317,10 @@ class RPG(commands.Cog):
         
         if not player:
             if member == ctx.author:
-                return await ctx.send("❌ You haven't started yet! Use `!rpg start`")
+                return await ctx.send("❌ You haven't started yet! Use `/rpg start`")
             else:
                 return await ctx.send("❌ This player hasn't started their adventure!")
         
-        # Calculate XP progress
         xp_needed = player.get_xp_needed()
         xp_progress = int((player.xp / xp_needed) * 20) if not player.is_max_level() else 20
         xp_bar = '█' * xp_progress + '░' * (20 - xp_progress)
@@ -326,7 +331,6 @@ class RPG(commands.Cog):
             color=discord.Color.blue()
         )
         
-        # Level and XP
         if player.is_max_level():
             embed.add_field(name="⭐ Level", value="**MAX LEVEL (100)** 🔥", inline=False)
         else:
@@ -338,25 +342,25 @@ class RPG(commands.Cog):
                 inline=False
             )
         
-        # Combat Stats
-        embed.add_field(name="❤️ HP", value=f"{player.hp}/{player.max_hp}", inline=True)
-        embed.add_field(name="💎 MP", value=f"{player.mp}/{player.max_mp}", inline=True)
+        hp_bar = self.format_hp_bar(player.hp, player.max_hp, 10)
+        mp_bar = self.format_hp_bar(player.mp, player.max_mp, 10)
+        
+        embed.add_field(name="❤️ HP", value=f"{player.hp}/{player.max_hp} {hp_bar}", inline=True)
+        embed.add_field(name="💎 MP", value=f"{player.mp}/{player.max_mp} {mp_bar}", inline=True)
         embed.add_field(name="⚔️ ATK", value=player.attack, inline=True)
         embed.add_field(name="🛡️ DEF", value=player.defense, inline=True)
         embed.add_field(name="🔮 MAG", value=player.magic, inline=True)
         
-        # Economy
         embed.add_field(name="💰 Gold", value=f"{player.gold:,}", inline=True)
         embed.add_field(name="💎 Gems", value=player.gems, inline=True)
         
-        # Equipment
         equip_text = ""
         for slot, item in player.equipment.items():
             emoji = {'weapon': '⚔️', 'armor': '🛡️', 'accessory': '💍'}
-            equip_text += f"{emoji[slot]} {slot.title()}: {item or 'None'}\n"
+            item_name = self.shop_items[item]['name'] if item and item in self.shop_items else 'None'
+            equip_text += f"{emoji[slot]} {slot.title()}: {item_name}\n"
         embed.add_field(name="🎒 Equipment", value=equip_text, inline=False)
         
-        # Statistics
         stats_text = f"🐉 Monsters Killed: {player.monsters_killed}\n"
         stats_text += f"💀 Bosses Defeated: {player.bosses_killed}\n"
         stats_text += f"☠️ Deaths: {player.deaths}"
@@ -371,12 +375,11 @@ class RPG(commands.Cog):
         player = self.get_player(ctx.author.id)
         
         if not player:
-            return await ctx.send("❌ Start with `!rpg start` first!")
+            return await ctx.send("❌ Start with `/rpg start` first!")
         
         if player.hp <= 0:
-            return await ctx.send("💀 You're dead! Use `!rpg heal` to revive.")
+            return await ctx.send("💀 You're dead! Use `/rpg heal` to revive.")
         
-        # Select monster based on level
         available_monsters = {
             name: stats for name, stats in self.monsters.items()
             if stats['level'] <= player.level + 5
@@ -388,18 +391,15 @@ class RPG(commands.Cog):
         monster_name = random.choice(list(available_monsters.keys()))
         monster = available_monsters[monster_name]
         
-        # Battle simulation
         embed = discord.Embed(
             title=f"⚔️ Encounter: {monster_name}",
             description="A wild monster appears!",
             color=discord.Color.red()
         )
         
-        # Calculate damages
         player_damage = self.calculate_damage(player.attack, monster['defense'])
         monster_damage = self.calculate_damage(monster['attack'], player.defense)
         
-        # Special attacks based on class
         special_damage = 0
         if player.class_type == 'Mage' and player.mp >= 10:
             special_damage = player.magic * 2
@@ -426,9 +426,7 @@ class RPG(commands.Cog):
             inline=True
         )
         
-        # Check if monster defeated
         if total_player_damage >= monster['hp']:
-            # Victory!
             gold_earned = monster['gold'] + random.randint(-5, 10)
             xp_earned = monster['xp'] + random.randint(-5, 10)
             
@@ -443,18 +441,15 @@ class RPG(commands.Cog):
             )
             embed.color = discord.Color.green()
             
-            # Check level up
             level_up = await self.check_level_up(ctx, player)
             if level_up:
                 embed.add_field(name="⭐ LEVEL UP!", value=level_up, inline=False)
             
-            # Random loot
             if random.random() < 0.15:
                 loot = random.choice(list(self.shop_items.keys()))
                 player.inventory.append(loot)
                 embed.add_field(name="🎁 Item Drop!", value=f"Found: **{self.shop_items[loot]['name']}**", inline=False)
         else:
-            # Monster survived
             player.hp -= monster_damage
             embed.add_field(name="💔 Battle Continues", value="The monster fights back!", inline=False)
         
@@ -463,7 +458,8 @@ class RPG(commands.Cog):
             player.deaths += 1
             embed.add_field(name="☠️ DEFEATED!", value="You were knocked out! Heal to continue.", inline=False)
         
-        embed.set_footer(text=f"❤️ HP: {player.hp}/{player.max_hp} | ⭐ Level: {player.level}")
+        hp_bar = self.format_hp_bar(player.hp, player.max_hp, 10)
+        embed.set_footer(text=f"❤️ HP: {player.hp}/{player.max_hp} {hp_bar} | ⭐ Level: {player.level}")
         await ctx.send(embed=embed)
         self.save_data()
     
@@ -473,21 +469,21 @@ class RPG(commands.Cog):
         player = self.get_player(ctx.author.id)
         
         if not player:
-            return await ctx.send("❌ Start with `!rpg start` first!")
+            return await ctx.send("❌ Start with `/rpg start` first!")
         
         if player.hp <= 0:
             return await ctx.send("💀 You're dead! Can't fight bosses.")
         
-        # Check cooldown
         if player.last_boss:
             last = datetime.fromisoformat(player.last_boss)
             cooldown = timedelta(hours=1)
             if datetime.now() - last < cooldown:
                 remaining = cooldown - (datetime.now() - last)
-                minutes = remaining.seconds // 60
-                return await ctx.send(f"⏰ Boss cooldown! Wait **{minutes} minutes**.")
+                total_secs = int(remaining.total_seconds())
+                hours = total_secs // 3600
+                minutes = (total_secs % 3600) // 60
+                return await ctx.send(f"⏰ Boss cooldown! Wait **{hours}h {minutes}m**.")
         
-        # Select boss
         if player.level < 25:
             boss_name = 'Dark Knight'
         elif player.level < 50:
@@ -500,7 +496,6 @@ class RPG(commands.Cog):
         boss = self.bosses[boss_name].copy()
         boss_hp = boss['hp']
         
-        # Boss battle sequence
         boss_embed = discord.Embed(
             title=f"💀 BOSS BATTLE: {boss_name}",
             description="⚔️ Prepare for an epic battle!",
@@ -510,7 +505,6 @@ class RPG(commands.Cog):
         
         await asyncio.sleep(1)
         
-        # Battle phases
         battle_log = []
         player_original_hp = player.hp
         
@@ -525,11 +519,9 @@ class RPG(commands.Cog):
             await boss_msg.edit(embed=boss_embed)
             await asyncio.sleep(1)
             
-            # Phase damage
             player_damage = self.calculate_damage(player.attack, boss['defense'])
             boss_damage = self.calculate_damage(boss['attack'], player.defense)
             
-            # Class bonuses
             if player.class_type == 'Warrior':
                 player_damage = int(player_damage * 1.3)
             elif player.class_type == 'Mage' and player.mp >= 20:
@@ -541,12 +533,10 @@ class RPG(commands.Cog):
             
             battle_log.append(f"Phase {phase+1}: You dealt {player_damage}, took {boss_damage}")
             
-            if player.hp <= 0:
+            if player.hp <= 0 or boss_hp <= 0:
                 break
         
-        # Final result
         if player.hp > 0 and boss_hp <= 0:
-            # Victory
             gold_reward = boss['gold']
             xp_reward = boss['xp']
             gems_reward = boss['gems']
@@ -570,7 +560,6 @@ class RPG(commands.Cog):
             if level_up:
                 result_embed.add_field(name="⭐ LEVEL UP!", value=level_up, inline=False)
             
-            # Rare drop
             if random.random() < 0.5:
                 rare_items = ['dragon_armor', 'magic_staff', 'elixir']
                 rare_item = random.choice(rare_items)
@@ -583,7 +572,6 @@ class RPG(commands.Cog):
             
             await ctx.send(embed=result_embed)
         else:
-            # Defeat
             player.hp = max(0, player_original_hp - 50)
             player.deaths += 1
             player.last_boss = datetime.now().isoformat()
@@ -608,14 +596,13 @@ class RPG(commands.Cog):
             player.xp -= xp_needed
             player.level += 1
             
-            # Stat increases
             hp_boost = 15
             mp_boost = 8
             atk_boost = 3
             def_boost = 2
             
             player.max_hp += hp_boost
-            player.hp = player.max_hp  # Full heal on level up
+            player.hp = player.max_hp
             player.max_mp += mp_boost
             player.mp = player.max_mp
             player.attack += atk_boost
@@ -632,11 +619,10 @@ class RPG(commands.Cog):
         """View the item shop"""
         embed = discord.Embed(
             title="🏪 RPG Item Shop",
-            description="Buy items with `!rpg buy <item>`\nSell items with `!rpg sell <item>`",
+            description="Buy items with `/rpg buy <item>`\nSell items with `/rpg sell <item>`",
             color=discord.Color.green()
         )
         
-        # Categorize items
         consumables = []
         weapons = []
         armors = []
@@ -679,39 +665,87 @@ class RPG(commands.Cog):
         await ctx.send(embed=embed)
     
     @rpg.command(name='buy')
+    @app_commands.describe(item_name="The item ID to buy")
     async def buy_item(self, ctx, *, item_name: str):
         """Buy an item from the shop"""
         player = self.get_player(ctx.author.id)
         
         if not player:
-            return await ctx.send("❌ Start with `!rpg start` first!")
+            return await ctx.send("❌ Start with `/rpg start` first!")
         
         item_name = item_name.lower().replace(' ', '_')
         
         if item_name not in self.shop_items:
-            return await ctx.send("❌ Item not found! Check `!rpg shop` for available items.")
+            return await ctx.send("❌ Item not found! Check `/rpg shop` for available items.")
         
         item = self.shop_items[item_name]
         
         if player.gold < item['price']:
             return await ctx.send(f"❌ Not enough gold! You need **{item['price']}g**, you have **{player.gold}g**.")
         
-        # Buy item
         player.gold -= item['price']
+        player.inventory.append(item_name)
         
-        # Handle consumables
-        if item['type'] == 'consumable':
-            effects = item['effect']
-            if 'heal' in effects:
-                player.hp = min(player.max_hp, player.hp + effects['heal'])
-            if 'mana' in effects:
-                player.mp = min(player.max_mp, player.mp + effects['mana'])
+        await ctx.send(f"✅ Purchased **{item['name']}**! Check your `/rpg inventory`.")
+        self.save_data()
+
+    @rpg.command(name='sell')
+    @app_commands.describe(item_name="The item ID to sell")
+    async def sell_item(self, ctx, *, item_name: str):
+        """Sell an item from your inventory"""
+        player = self.get_player(ctx.author.id)
+        
+        if not player:
+            return await ctx.send("❌ Start with `/rpg start` first!")
+        
+        item_name = item_name.lower().replace(' ', '_')
+        
+        if item_name not in player.inventory:
+            return await ctx.send("❌ You don't have this item!")
+        
+        if item_name not in self.shop_items:
+            return await ctx.send("❌ This item cannot be sold!")
+        
+        item = self.shop_items[item_name]
+        sell_price = item['price'] // 2
+        
+        player.gold += sell_price
+        player.inventory.remove(item_name)
+        
+        await ctx.send(f"✅ Sold **{item['name']}** for **{sell_price}g**!")
+        self.save_data()
+
+    @rpg.command(name='use')
+    @app_commands.describe(item_name="The consumable item ID to use")
+    async def use_item(self, ctx, *, item_name: str):
+        """Use a consumable item"""
+        player = self.get_player(ctx.author.id)
+        
+        if not player:
+            return await ctx.send("❌ Start with `/rpg start` first!")
+        
+        item_name = item_name.lower().replace(' ', '_')
+        
+        if item_name not in player.inventory:
+            return await ctx.send("❌ You don't have this item!")
+        
+        item = self.shop_items.get(item_name)
+        if not item or item['type'] != 'consumable':
+            return await ctx.send("❌ This item is not a consumable!")
             
-            await ctx.send(f"✅ Bought and used **{item['name']}**!")
-        else:
-            player.inventory.append(item_name)
-            await ctx.send(f"✅ Purchased **{item['name']}**! Use `!rpg equip {item_name}` to equip it.")
+        effects = item['effect']
+        healed = 0
+        mana_restored = 0
         
+        if 'heal' in effects:
+            healed = min(player.max_hp - player.hp, effects['heal'])
+            player.hp += healed
+        if 'mana' in effects:
+            mana_restored = min(player.max_mp - player.mp, effects['mana'])
+            player.mp += mana_restored
+            
+        player.inventory.remove(item_name)
+        await ctx.send(f"✅ Used **{item['name']}**! Restored {healed} HP and {mana_restored} MP.")
         self.save_data()
     
     @rpg.command(name='inventory')
@@ -720,12 +754,11 @@ class RPG(commands.Cog):
         player = self.get_player(ctx.author.id)
         
         if not player:
-            return await ctx.send("❌ Start with `!rpg start` first!")
+            return await ctx.send("❌ Start with `/rpg start` first!")
         
         if not player.inventory:
             return await ctx.send("🎒 Your inventory is empty!")
         
-        # Count items
         items_count = {}
         for item in player.inventory:
             items_count[item] = items_count.get(item, 0) + 1
@@ -737,21 +770,25 @@ class RPG(commands.Cog):
         
         for item_id, count in items_count.items():
             item_name = self.shop_items.get(item_id, {}).get('name', item_id)
+            item_type = self.shop_items.get(item_id, {}).get('type', 'unknown')
+            action = "equip" if item_type != 'consumable' else "use"
+            
             embed.add_field(
                 name=f"{item_name}",
-                value=f"Quantity: **{count}**\nUse `!rpg equip {item_id}` to equip",
+                value=f"Quantity: **{count}**\nUse `/rpg {action} {item_id}`",
                 inline=True
             )
         
         await ctx.send(embed=embed)
     
     @rpg.command(name='equip')
+    @app_commands.describe(item_name="The item ID to equip")
     async def equip_item(self, ctx, *, item_name: str):
         """Equip an item from inventory"""
         player = self.get_player(ctx.author.id)
         
         if not player:
-            return await ctx.send("❌ Start with `!rpg start` first!")
+            return await ctx.send("❌ Start with `/rpg start` first!")
         
         item_name = item_name.lower().replace(' ', '_')
         
@@ -764,21 +801,24 @@ class RPG(commands.Cog):
         item = self.shop_items[item_name]
         
         if item['type'] == 'consumable':
-            return await ctx.send("❌ Consumables cannot be equipped!")
+            return await ctx.send("❌ Consumables cannot be equipped! Use `/rpg use` instead.")
         
-        # Unequip current item
         slot = item['type']
         old_item = player.equipment[slot]
         
-        # Apply new item stats
+        # Remove old item stats (FIXED BUG)
+        if old_item and old_item in self.shop_items:
+            old_effects = self.shop_items[old_item]['effect']
+            if 'attack' in old_effects: player.attack -= old_effects['attack']
+            if 'magic' in old_effects: player.magic -= old_effects['magic']
+            if 'defense' in old_effects: player.defense -= old_effects['defense']
+        
         player.equipment[slot] = item_name
         player.inventory.remove(item_name)
         
-        # Add old item back to inventory
         if old_item:
             player.inventory.append(old_item)
         
-        # Apply stat bonuses
         effects = item['effect']
         if 'attack' in effects:
             player.attack += effects['attack']
@@ -796,19 +836,18 @@ class RPG(commands.Cog):
         player = self.get_player(ctx.author.id)
         
         if not player:
-            return await ctx.send("❌ Start with `!rpg start` first!")
+            return await ctx.send("❌ Start with `/rpg start` first!")
         
-        # Check cooldown
         if player.last_daily:
             last = datetime.fromisoformat(player.last_daily)
             cooldown = timedelta(hours=24)
             if datetime.now() - last < cooldown:
                 remaining = cooldown - (datetime.now() - last)
-                hours = remaining.seconds // 3600
-                minutes = (remaining.seconds % 3600) // 60
+                total_secs = int(remaining.total_seconds())
+                hours = total_secs // 3600
+                minutes = (total_secs % 3600) // 60
                 return await ctx.send(f"⏰ Daily reward in **{hours}h {minutes}m**")
         
-        # Calculate rewards
         gold_reward = 50 + (player.level * 15)
         xp_reward = 25 + (player.level * 10)
         gems_reward = 1 if player.level >= 20 else 0
@@ -841,10 +880,10 @@ class RPG(commands.Cog):
         player = self.get_player(ctx.author.id)
         
         if not player:
-            return await ctx.send("❌ Start with `!rpg start` first!")
+            return await ctx.send("❌ Start with `/rpg start` first!")
         
-        if player.hp >= player.max_hp:
-            return await ctx.send("❤️ You're already at full HP!")
+        if player.hp >= player.max_hp and player.mp >= player.max_mp:
+            return await ctx.send("❤️ You're already at full HP and MP!")
         
         cost = 30
         if player.gold < cost:
@@ -863,7 +902,6 @@ class RPG(commands.Cog):
         if not self.players:
             return await ctx.send("📊 No players yet!")
         
-        # Sort players by level and XP
         sorted_players = sorted(
             self.players.values(),
             key=lambda p: (p.level, p.xp, p.gold),
@@ -897,6 +935,7 @@ class RPG(commands.Cog):
         await ctx.send(embed=embed)
     
     @rpg.command(name='duel')
+    @app_commands.describe(opponent="The user to duel")
     async def duel(self, ctx, opponent: discord.Member):
         """Challenge another player to a duel"""
         if opponent.bot or opponent == ctx.author:
@@ -915,7 +954,6 @@ class RPG(commands.Cog):
         if opp_player.hp <= 0:
             return await ctx.send("💀 Your opponent is dead!")
         
-        # Duel confirmation
         duel_msg = await ctx.send(
             f"⚔️ **{opponent.mention}**, {ctx.author.mention} challenges you to a duel!\n"
             f"React with ⚔️ to accept!"
@@ -930,31 +968,36 @@ class RPG(commands.Cog):
         except asyncio.TimeoutError:
             return await ctx.send("⏰ Duel request timed out!")
         
-        # Duel battle
         battle_log = []
         
+        # FIXED BUG: Stop duel if someone dies
         for round_num in range(3):
+            if player.hp <= 0 or opp_player.hp <= 0:
+                break
+                
             p1_dmg = self.calculate_damage(player.attack, opp_player.defense)
             p2_dmg = self.calculate_damage(opp_player.attack, player.defense)
             
-            player.hp -= p2_dmg
             opp_player.hp -= p1_dmg
+            player.hp -= p2_dmg
             
             battle_log.append(f"Round {round_num+1}: {ctx.author.name} dealt {p1_dmg}, took {p2_dmg}")
         
-        # Determine winner
-        if player.hp > opp_player.hp:
-            winner = ctx.author
-            loser = opponent
-            gold_reward = random.randint(20, 50)
-            player.gold += gold_reward
+        # Determine winner properly
+        if player.hp > 0 and opp_player.hp <= 0:
+            winner, loser = ctx.author, opponent
+        elif opp_player.hp > 0 and player.hp <= 0:
+            winner, loser = opponent, ctx.author
+        elif player.hp > opp_player.hp:
+            winner, loser = ctx.author, opponent
         elif opp_player.hp > player.hp:
-            winner = opponent
-            loser = ctx.author
-            gold_reward = random.randint(20, 50)
-            opp_player.gold += gold_reward
+            winner, loser = opponent, ctx.author
         else:
             return await ctx.send("⚔️ It's a draw!")
+            
+        gold_reward = random.randint(20, 50)
+        winner_player = self.get_player(winner.id)
+        winner_player.gold += gold_reward
         
         embed = discord.Embed(
             title="⚔️ DUEL RESULT",

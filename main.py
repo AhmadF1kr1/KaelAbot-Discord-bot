@@ -122,46 +122,54 @@ async def help_command(ctx, category: str = None):
             title="🎵 Music Commands",
             color=discord.Color.purple()
         )
-        embed.add_field(name="!play <song>", value="Play a song from YouTube", inline=False)
-        embed.add_field(name="!pause", value="Pause current song", inline=False)
-        embed.add_field(name="!resume", value="Resume paused song", inline=False)
-        embed.add_field(name="!skip", value="Skip to next song", inline=False)
-        embed.add_field(name="!volume <0-200>", value="Set volume level", inline=False)
-        embed.add_field(name="!queue", value="Show current queue", inline=False)
-        embed.add_field(name="!shuffle", value="Shuffle the queue", inline=False)
-        embed.add_field(name="!loop <off/song/queue>", value="Set loop mode", inline=False)
-        embed.add_field(name="!stop", value="Stop music and disconnect", inline=False)
-        embed.add_field(name="!nowplaying", value="Show currently playing song", inline=False)
+        embed.add_field(name="!play <song> or /play", value="Play a song from YouTube", inline=False)
+        embed.add_field(name="!pause or /pause", value="Pause current song", inline=False)
+        embed.add_field(name="!resume or /resume", value="Resume paused song", inline=False)
+        embed.add_field(name="!skip or /skip", value="Skip to next song", inline=False)
+        embed.add_field(name="!volume <0-200> or /volume", value="Set/check volume level", inline=False)
+        embed.add_field(name="!queue or /queue", value="Show current queue", inline=False)
+        embed.add_field(name="!shuffle or /shuffle", value="Shuffle the queue", inline=False)
+        embed.add_field(name="!loop <off/song/queue> or /loop", value="Set loop mode", inline=False)
+        embed.add_field(name="!stop or /stop", value="Stop music and disconnect", inline=False)
+        embed.add_field(name="!nowplaying or /nowplaying", value="Show currently playing song", inline=False)
+        embed.add_field(name="!remove <index> or /remove", value="Remove a song from queue by index", inline=False)
+        embed.add_field(name="!clearqueue or /clearqueue", value="Clear the entire queue", inline=False)
         
     elif category.lower() == 'welcome':
         embed = discord.Embed(
-            title="👋 Welcome System Commands",
+            title="👋 Welcome & Goodbye System Commands",
             color=discord.Color.green()
         )
-        embed.add_field(name="!set_welcome <channel> <message>", 
+        embed.add_field(name="!welcome set <channel> [message] or /welcome set", 
                        value="Set welcome channel and message\n"
-                             "Variables: {member}, {server}, {member_count}", inline=False)
-        embed.add_field(name="!set_goodbye <channel> <message>", 
-                       value="Set goodbye channel and message", inline=False)
-        embed.add_field(name="!test_welcome", value="Test welcome message", inline=False)
-        embed.add_field(name="!welcome_settings", value="View current settings", inline=False)
+                             "Variables: {member}, {member_name}, {server}, {member_count}", inline=False)
+        embed.add_field(name="!welcome test or /welcome test", value="Test welcome message", inline=False)
+        embed.add_field(name="!welcome settings or /welcome settings", value="View current welcome & goodbye settings", inline=False)
+        embed.add_field(name="!welcome disable or /welcome disable", value="Disable welcome messages", inline=False)
+        embed.add_field(name="!goodbye set <channel> [message] or /goodbye set", value="Set goodbye channel and message", inline=False)
+        embed.add_field(name="!goodbye test or /goodbye test", value="Test goodbye message", inline=False)
+        embed.add_field(name="!goodbye disable or /goodbye disable", value="Disable goodbye messages", inline=False)
         
     elif category.lower() == 'rpg':
         embed = discord.Embed(
             title="⚔️ RPG Game Commands",
             color=discord.Color.gold()
         )
-        embed.add_field(name="!rpg start", value="Start your adventure", inline=False)
-        embed.add_field(name="!rpg class <warrior/mage/archer>", value="Choose your class", inline=False)
-        embed.add_field(name="!rpg profile", value="View your character stats", inline=False)
-        embed.add_field(name="!rpg hunt", value="Hunt monsters for rewards", inline=False)
-        embed.add_field(name="!rpg boss", value="Fight a boss (1h cooldown)", inline=False)
-        embed.add_field(name="!rpg shop", value="Open the item shop", inline=False)
-        embed.add_field(name="!rpg buy <item>", value="Purchase an item", inline=False)
-        embed.add_field(name="!rpg inventory", value="Check your items", inline=False)
-        embed.add_field(name="!rpg daily", value="Claim daily reward", inline=False)
-        embed.add_field(name="!rpg heal", value="Heal for 20 gold", inline=False)
-        embed.add_field(name="!rpg top", value="View leaderboard", inline=False)
+        embed.add_field(name="!rpg start or /rpg start", value="Start your adventure", inline=False)
+        embed.add_field(name="!rpg class <warrior/mage/archer/healer> or /rpg class", value="Choose your class", inline=False)
+        embed.add_field(name="!rpg profile or /rpg profile", value="View your character stats", inline=False)
+        embed.add_field(name="!rpg hunt or /rpg hunt", value="Hunt monsters for rewards", inline=False)
+        embed.add_field(name="!rpg boss or /rpg boss", value="Fight a boss (1h cooldown)", inline=False)
+        embed.add_field(name="!rpg shop or /rpg shop", value="Open the item shop", inline=False)
+        embed.add_field(name="!rpg buy <item> or /rpg buy", value="Purchase an item", inline=False)
+        embed.add_field(name="!rpg sell <item> or /rpg sell", value="Sell an item", inline=False)
+        embed.add_field(name="!rpg use <item> or /rpg use", value="Use a consumable item", inline=False)
+        embed.add_field(name="!rpg inventory or /rpg inventory", value="Check your items", inline=False)
+        embed.add_field(name="!rpg equip <item> or /rpg equip", value="Equip an item", inline=False)
+        embed.add_field(name="!rpg daily or /rpg daily", value="Claim daily reward", inline=False)
+        embed.add_field(name="!rpg heal or /rpg heal", value="Heal for 30 gold", inline=False)
+        embed.add_field(name="!rpg top or /rpg top", value="View leaderboard", inline=False)
+        embed.add_field(name="!rpg duel @user or /rpg duel", value="Duel another player", inline=False)
         
     elif category.lower() == 'rolemenu':
         embed = discord.Embed(
