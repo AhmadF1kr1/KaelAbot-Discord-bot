@@ -236,7 +236,8 @@ class Welcome(commands.Cog):
             name="Commands",
             value="`/goodbye set <#channel> [message]` - Set goodbye channel\n"
                   "`/goodbye test` - Test goodbye message\n"
-                  "`/goodbye disable` - Disable goodbye messages",
+                  "`/goodbye disable` - Disable goodbye messages\n\n"
+                  "**Variables:** {member}, {member_name}, {server}, {member_count}",
             inline=False
         )
         await ctx.send(embed=embed)
@@ -251,7 +252,7 @@ class Welcome(commands.Cog):
         guild_id = ctx.guild.id
 
         if message is None:
-            message = "Goodbye {member}! We'll miss you 😢"
+            message = "Goodbye {member_name}! We'll miss you 😢"
 
         self.goodbye_config[guild_id] = {
             'channel_id': channel.id,
@@ -271,11 +272,14 @@ class Welcome(commands.Cog):
 
         config = self.goodbye_config[guild_id]
         message = config['message']
-        message = message.replace('{member}', ctx.author.mention)
+        
+        # FIX: Gunakan <@ID> untuk {member} agar Discord merender nama user
+        message = message.replace('{member}', f"<@{ctx.author.id}>")
         message = message.replace('{member_name}', ctx.author.name)
         message = message.replace('{server}', ctx.guild.name)
+        message = message.replace('{member_count}', str(ctx.guild.member_count)) # FIX: Tambahkan ini
 
-        await ctx.send(message)
+        await ctx.send(f"🔍 **Preview Pesan Goodbye:**\n{message}")
 
     @goodbye_group.command(name='disable')
     async def disable_goodbye(self, ctx):
@@ -336,7 +340,9 @@ class Welcome(commands.Cog):
             return
 
         message = config['message']
-        message = message.replace('{member}', member.name)
+        
+        # FIX: Gunakan <@ID> untuk {member} agar Discord merender nama user yang sudah keluar
+        message = message.replace('{member}', f"<@{member.id}>")
         message = message.replace('{member_name}', member.name)
         message = message.replace('{server}', member.guild.name)
         message = message.replace('{member_count}', str(member.guild.member_count))
