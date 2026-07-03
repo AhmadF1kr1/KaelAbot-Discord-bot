@@ -1,5 +1,5 @@
 """
-Discord Fiku-Bot
+Discord KaelAbot
 Features: Music, Welcome/Goodbye, RPG Text
 Author: Fik-_-
 Version: 1.0.0
