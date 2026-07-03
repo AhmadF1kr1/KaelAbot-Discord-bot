@@ -1,10 +1,10 @@
-# 🤖 Fiku-Bot - Discord Multipurpose Bot
+# 🤖 KaelAbot - Discord Bot
 
 [![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)](https://www.python.org/)
 [![Discord.py](https://img.shields.io/badge/discord.py-2.0+-green.svg)](https://discordpy.readthedocs.io/)
 [![License](https://img.shields.io/badge/license-MIT-purple.svg)](LICENSE)
 
-Fiku-Bot adalah bot Discord serbaguna (*multipurpose*) yang dirancang menggunakan pustaka **discord.py** (v2.0+). Bot ini dilengkapi dengan berbagai fitur menarik seperti sistem musik interaktif, sistem penyambutan (*welcome & goodbye*) dengan kartu gambar dinamis, game RPG berbasis teks yang mendalam, dan menu pemilihan peran (*role menu*) interaktif menggunakan tombol (*button*) atau dropdown.
+KaelAbot adalah bot Discord serbaguna (*multipurpose*) yang dirancang menggunakan pustaka **discord.py** (v2.0+). Bot ini dilengkapi dengan berbagai fitur menarik seperti sistem musik interaktif, sistem penyambutan (*welcome & goodbye*) dengan kartu gambar dinamis, game RPG berbasis teks yang mendalam, dan menu pemilihan peran (*role menu*) interaktif menggunakan tombol (*button*) atau dropdown.
 
 Semua perintah bot dapat dipanggil menggunakan awalan prefix klasik (default: `!`) maupun fitur **Slash Commands** (`/`) modern Discord secara penuh.
 
@@ -58,7 +58,7 @@ Sebelum menjalankan bot, pastikan server atau komputer Anda telah memiliki:
 
 ### 1. Clone Repository & Masuk ke Direktori
 ```bash
-git clone https://github.com/AhmadF1kr1/Fiku-Bot.git
+git clone https://github.com/AhmadF1kr1/KaelAbot-Discord-bot.git
 cd KaelAbot-Discord-Bot
 ```
 
