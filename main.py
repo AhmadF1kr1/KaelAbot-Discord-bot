@@ -48,7 +48,7 @@ class MultipurposeBot(commands.Bot):
             except Exception as e:
                 print(f'❌ Failed to load {ext}: {e}')
         
-        # FIX: Sync tree di setup_hook (lebih efisien)
+        # Sync tree di setup_hook (lebih efisien)
         try:
             synced = await self.tree.sync()
             print(f'✅ Synced {len(synced)} slash commands globally')
@@ -79,14 +79,14 @@ async def on_ready():
     await bot.change_presence(
         activity=discord.Activity(
             type=discord.ActivityType.watching,
-            name='KaelAbot Online!  |  !help'
+            name='KaelAbot Online! | type !help'
         ),
         status=discord.Status.online
     )
 
-# ============ BASIC COMMANDS ============
+# ============ HYBRID COMMANDS ============
 
-@bot.command(name='ping')
+@bot.hybrid_command(name='ping')
 async def ping(ctx):
     """Check bot latency"""
     embed = discord.Embed(
@@ -96,10 +96,17 @@ async def ping(ctx):
     )
     await ctx.send(embed=embed)
 
-@bot.command(name='help')
+@bot.hybrid_command(name='help')
+@app_commands.describe(category="Pilih kategori command yang ingin dilihat")
+@app_commands.choices(category=[
+    app_commands.Choice(name="Music", value="music"),
+    app_commands.Choice(name="Welcome", value="welcome"),
+    app_commands.Choice(name="RPG", value="rpg"),
+    app_commands.Choice(name="RoleMenu", value="rolemenu")
+])
 async def help_command(ctx, category: str = None):
     """Show help menu"""
-    # FIX: Gunakan ctx.prefix agar dinamis
+    # Gunakan ctx.prefix agar dinamis
     p = ctx.prefix
     
     if category is None:
@@ -190,10 +197,10 @@ async def help_command(ctx, category: str = None):
     embed.set_footer(text=f"Requested by {ctx.author.name}", icon_url=ctx.author.avatar.url)
     await ctx.send(embed=embed)
 
-@bot.command(name='info')
+@bot.hybrid_command(name='info')
 async def info(ctx):
     """Show bot information"""
-    # FIX: Gunakan command_prefix dinamis
+    # Gunakan command_prefix dinamis
     current_prefix = bot.command_prefix
     if callable(current_prefix):
         current_prefix = "!"  # fallback
@@ -249,7 +256,6 @@ async def on_command_error(ctx, error):
         )
         await ctx.send(embed=embed)
     
-    # FIX: Handle cooldown error
     elif isinstance(error, commands.CommandOnCooldown):
         embed = discord.Embed(
             title="⏰ Cooldown Active",
@@ -258,7 +264,6 @@ async def on_command_error(ctx, error):
         )
         await ctx.send(embed=embed)
     
-    # FIX: Handle check failures (guild_only, has_permissions, etc)
     elif isinstance(error, commands.CheckFailure):
         embed = discord.Embed(
             title="❌ Check Failed",
@@ -277,7 +282,7 @@ async def on_command_error(ctx, error):
         )
         await ctx.send(embed=embed)
 
-# FIX: Error handler untuk SLASH COMMANDS
+# Error handler untuk SLASH COMMANDS
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     """Global error handler for SLASH commands"""
