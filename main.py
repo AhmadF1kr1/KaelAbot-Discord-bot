@@ -76,11 +76,10 @@ async def on_ready():
     print('='*50)
     
     # Set bot status
-    prefix = os.getenv("PREFIX", "!")
     await bot.change_presence(
         activity=discord.Activity(
-            type=discord.ActivityType.listening,
-            name=f'{prefix}help | Music & RPG'
+            type=discord.ActivityType.watching,
+            name='KaelAbot Online! how can i help you today?'
         ),
         status=discord.Status.online
     )
