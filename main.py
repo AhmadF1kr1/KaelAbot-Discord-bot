@@ -79,7 +79,7 @@ async def on_ready():
     await bot.change_presence(
         activity=discord.Activity(
             type=discord.ActivityType.watching,
-            name='KaelAbot Online! how can i help you today?'
+            name='KaelAbot Online! || !help'
         ),
         status=discord.Status.online
     )
