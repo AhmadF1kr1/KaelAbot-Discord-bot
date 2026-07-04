@@ -31,13 +31,14 @@ class Music(commands.Cog):
             'ignoreerrors': False,
             'logtostderr': False,
             'default_search': 'auto',
-            'source_address': '0.0.0.0'
+            'source_address': '0.0.0.0',
+            'cachedir': False
         }
         
         # FFmpeg options
         self.ffmpeg_opts = {
-            'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
-            'options': '-vn -bufsize 8192k'
+            'before_options': '-reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 5',
+            'options': '-vn'
         }
     
     async def ensure_voice(self, ctx):
@@ -136,12 +137,17 @@ class Music(commands.Cog):
                         volume=self.volume_level[guild_id]
                     )
                 
-                ctx.voice_client.play(
-                    audio_source,
-                    after=lambda e: asyncio.run_coroutine_threadsafe(
+                def after_playing(error):
+                    if error:
+                        print(f"Playback error in after callback: {error}")
+                    asyncio.run_coroutine_threadsafe(
                         self.play_next(ctx), 
                         self.bot.loop
-                    ).result()
+                    )
+
+                ctx.voice_client.play(
+                    audio_source,
+                    after=after_playing
                 )
                 
                 song = self.now_playing[guild_id]

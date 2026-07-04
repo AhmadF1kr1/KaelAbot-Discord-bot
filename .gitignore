@@ -14,6 +14,7 @@ build/
 # Data
 data/rpg_data.json
 data/welcome_config.json
+data/role_select_config.json
 
 # IDE
 .vscode/
@@ -24,3 +25,4 @@ data/welcome_config.json
 # OS
 .DS_Store
 Thumbs.db
+
