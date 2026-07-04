@@ -166,6 +166,7 @@ class Welcome(commands.Cog):
         config = self.welcome_config[guild_id]
         message = config['message']
         
+        message = message.replace('{member.mention}', ctx.author.mention)
         message = message.replace('{member}', ctx.author.mention)
         message = message.replace('{member_name}', ctx.author.name)
         message = message.replace('{server}', ctx.guild.name)
@@ -310,6 +311,7 @@ class Welcome(commands.Cog):
             return
 
         message = config['message']
+        message = message.replace('{member.mention}', member.mention)
         message = message.replace('{member}', member.mention)
         message = message.replace('{member_name}', member.name)
         message = message.replace('{server}', member.guild.name)
@@ -342,6 +344,7 @@ class Welcome(commands.Cog):
         message = config['message']
         
         # FIX: Gunakan <@ID> untuk {member} agar Discord merender nama user yang sudah keluar
+        message = message.replace('{member.mention}', f"<@{member.id}>")
         message = message.replace('{member}', f"<@{member.id}>")
         message = message.replace('{member_name}', member.name)
         message = message.replace('{server}', member.guild.name)
