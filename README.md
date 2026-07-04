@@ -45,7 +45,7 @@ Mulai petualangan RPG berbasis teks langsung di server Discord Anda!
 ## 🛠️ Persyaratan Sistem (Prerequisites)
 
 Sebelum menjalankan bot, pastikan server atau komputer Anda telah memiliki:
-1. **Python 3.8 atau versi lebih tinggi**
+1. **Python 3.13 atau versi lebih tinggi**
 2. **FFmpeg** (Wajib diinstal dan masuk ke dalam PATH sistem agar fitur musik dapat berfungsi)
 3. **Discord Bot Token** dengan izin **Privileged Gateway Intents** diaktifkan pada Discord Developer Portal:
    - Presence Intent

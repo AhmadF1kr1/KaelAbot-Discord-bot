@@ -77,6 +77,8 @@ class Music(commands.Cog):
                     'uploader': info.get('uploader', 'Unknown'),
                     'views': info.get('view_count', 0)
                 }
+
+                print(song)
                 
                 return song
                 
@@ -116,10 +118,17 @@ class Music(commands.Cog):
         
         if source and ctx.voice_client:
             try:
-                audio_source = await discord.FFmpegOpusAudio.from_probe(
+                # audio_source = await discord.FFmpegOpusAudio.from_probe(
+                #     source,
+                #     **self.ffmpeg_opts
+                # )
+
+                audio_source = discord.FFmpegPCMAudio(
                     source,
                     **self.ffmpeg_opts
                 )
+
+                print(vars(audio_source))
                 
                 if guild_id in self.volume_level:
                     audio_source = discord.PCMVolumeTransformer(
