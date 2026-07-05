@@ -836,6 +836,116 @@ class Music(commands.Cog):
         view = NowPlayingView(self, ctx)
         await ctx.send(embed=embed, view=view)
     
+    @commands.hybrid_command(name='lyrics', description="Show lyrics of the currently playing song")
+    @app_commands.describe(romaji="Convert Japanese/Chinese/Korean lyrics to Romaji/Pinyin/Romanized form")
+    async def lyrics(self, ctx: commands.Context, romaji: bool = False):
+        """Show lyrics of the currently playing song"""
+        await ctx.defer()
+        guild_id = ctx.guild.id
+        
+        if guild_id not in self.now_playing:
+            return await ctx.send("❌ Nothing is currently playing!")
+            
+        song_title = self.now_playing[guild_id]['title']
+        
+        # Clean title to get better search results
+        import re
+        clean_title = song_title
+        clean_title = re.sub(r'\s*[\(\[][^)]*?(?:official|music|video|lyric|audio|hd|hq|version|edit|remix|ft\.|feat\.)[^)]*?[\)\]]', '', clean_title, flags=re.IGNORECASE)
+        clean_title = re.sub(r'\s*-\s*(?:official|music|video|lyric|audio|hd|hq|version|edit|remix|ft\.|feat\.).*$', '', clean_title, flags=re.IGNORECASE)
+        
+        # Remove Japanese/Chinese brackets and their contents
+        clean_title = re.sub(r'【[^】]*】', '', clean_title)
+        clean_title = re.sub(r'「[^」]*」', '', clean_title)
+        clean_title = re.sub(r'『[^』]*』', '', clean_title)
+        clean_title = re.sub(r'（[^）]*）', '', clean_title)
+        clean_title = re.sub(r'［[^］]*］', '', clean_title)
+        clean_title = clean_title.strip()
+        
+        # If cleaning results in empty string, fallback to original title
+        if not clean_title:
+            clean_title = song_title
+            
+        import aiohttp
+        import urllib.parse
+        url = f"https://lrclib.net/api/search?q={urllib.parse.quote(clean_title)}"
+        
+        try:
+            headers = {"User-Agent": "KaelAbot-Discord-Bot/1.0.0 (https://github.com/AhmadF1kr1/Fiku-Bot)"}
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers=headers, timeout=10) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        if data:
+                            # Use the first result that has plain lyrics
+                            song_data = None
+                            for item in data:
+                                if item.get('plainLyrics'):
+                                    song_data = item
+                                    break
+                            
+                            if not song_data:
+                                # Fallback to first item if none have plain lyrics
+                                song_data = data[0]
+                                
+                            lyrics_text = song_data.get('plainLyrics')
+                            if not lyrics_text:
+                                return await ctx.send(f"❌ Could not find lyrics for **{song_title}**.")
+                                
+                            is_romanized = False
+                            if romaji:
+                                import urllib.parse
+                                # Replace newlines with ' | ' to preserve formatting
+                                formatted_lyrics = lyrics_text.replace('\n', ' | ')
+                                # Truncate to 5000 chars to avoid Google Translate limit
+                                query_text = formatted_lyrics[:5000]
+                                translit_url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=en&dt=rm&q={urllib.parse.quote(query_text)}"
+                                try:
+                                    tr_headers = {'User-Agent': 'Mozilla/5.0'}
+                                    async with session.get(translit_url, headers=tr_headers, timeout=10) as tr_response:
+                                        if tr_response.status == 200:
+                                            tr_data = await tr_response.json()
+                                            romanized_parts = []
+                                            if tr_data and tr_data[0]:
+                                                for item in tr_data[0]:
+                                                    if len(item) > 3 and item[3]:
+                                                        romanized_parts.append(item[3])
+                                            if romanized_parts:
+                                                romanized_text = "".join(romanized_parts)
+                                                # Split back by pipeline symbol and join with newlines
+                                                lines = re.split(r'\s*\|\s*', romanized_text)
+                                                lyrics_text = '\n'.join(lines).strip()
+                                                is_romanized = True
+                                except Exception as e:
+                                    print(f"Failed to romanize lyrics: {e}")
+                                    # We fall back to original lyrics
+
+                            # Prepare embed
+                            title = song_data.get('trackName', song_title)
+                            artist = song_data.get('artistName', 'Unknown Artist')
+                            
+                            # Handle length limits
+                            # Embed description character limit is 4096.
+                            if len(lyrics_text) > 4000:
+                                lyrics_text = lyrics_text[:3990] + "\n\n... (truncated)"
+                                
+                            embed = discord.Embed(
+                                title=f"🎶 Lyrics for: {title}" + (" (Romaji/Romanized)" if is_romanized else ""),
+                                description=f"**Artist:** {artist}\n\n{lyrics_text}",
+                                color=discord.Color.blue()
+                            )
+                            embed.set_footer(text="Lyrics provided by LRCLIB" + (" | Transliterated via Google Translate" if is_romanized else ""))
+                            return await ctx.send(embed=embed)
+                        else:
+                            return await ctx.send(f"❌ Could not find lyrics for **{song_title}**.")
+                    else:
+                        return await ctx.send("❌ Error fetching lyrics from the service. Please try again later.")
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            print(f"Lyrics fetch error: {e}")
+            return await ctx.send("❌ An error occurred while fetching the lyrics.")
+    
     @commands.hybrid_command(name='remove', description="Remove a song from queue by index")
     @app_commands.describe(index="The queue position number to remove (1-based)")
     async def remove(self, ctx: commands.Context, index: int):

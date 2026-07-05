@@ -140,6 +140,7 @@ async def help_command(ctx, category: str = None):
         embed.add_field(name=f"{p}loop <off/song/queue> or /loop", value="Set loop mode", inline=False)
         embed.add_field(name=f"{p}stop or /stop", value="Stop music and disconnect", inline=False)
         embed.add_field(name=f"{p}nowplaying or /nowplaying", value="Show currently playing song", inline=False)
+        embed.add_field(name=f"{p}lyrics or /lyrics", value="Show lyrics of the currently playing song", inline=False)
         embed.add_field(name=f"{p}remove <index> or /remove", value="Remove a song from queue by index", inline=False)
         embed.add_field(name=f"{p}clearqueue or /clearqueue", value="Clear the entire queue", inline=False)
         
