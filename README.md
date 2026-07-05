@@ -1,6 +1,6 @@
 # 🤖 KaelAbot - Discord Bot
 
-[![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/Python-3.13+-blue.svg)](https://www.python.org/)
 [![Discord.py](https://img.shields.io/badge/discord.py-2.0+-green.svg)](https://discordpy.readthedocs.io/)
 [![License](https://img.shields.io/badge/license-MIT-purple.svg)](LICENSE)
 
@@ -14,16 +14,19 @@ Semua perintah bot dapat dipanggil menggunakan awalan prefix klasik (default: `!
 
 ### 🎵 1. Music System
 Sistem pemutar musik tangguh yang terintegrasi dengan YouTube menggunakan `yt-dlp` dan `discord.py` voice.
-- **Pencarian Pintar:** Cari lagu langsung dari judul atau tautan URL YouTube.
-- **Manajemen Antrean:** Dilengkapi fitur *shuffle*, *loop* (tunggal/antrean), hapus lagu, dan bersihkan antrean.
-- **Kontrol Volume:** Atur kekerasan suara dari 0% hingga 200%.
-- **Auto Leave:** Bot otomatis keluar dari voice channel jika tidak ada pengguna lain di dalamnya untuk menghemat bandwidth.
+- **Pencarian & Pemilihan Multi-Lagu:** Cari hingga 5 lagu sekaligus dari YouTube (`!search`) dan pilih lagu yang diinginkan menggunakan command (`!select`).
+- **Lirik Lagu Terintegrasi:** Dapatkan lirik lagu yang sedang diputar secara instan dari LRCLIB (`!lyrics`). Mendukung transliterasi lirik asing (Jepang/Korea/Mandarin) ke **Romaji/Romanized** secara otomatis menggunakan opsi `romaji: True` atau argumen command.
+- **Interactive Nowplaying Controls:** Tampilan menu *Now Playing* yang interaktif menggunakan tombol Discord (UI Buttons) untuk mengontrol pemutaran musik langsung (Pause/Resume, Skip, Previous, Shuffle, Loop Mode, Queue, Autoplay, dan Volume Up/Down).
+- **Autoplay Radio:** Bot dapat mencari dan memutar lagu terkait secara otomatis setelah antrean lagu habis untuk menjaga musik tetap berjalan.
+- **Manajemen Antrean:** Dilengkapi fitur *shuffle*, *loop* (tunggal/antrean), hapus lagu (`!remove`), dan bersihkan antrean (`!clearqueue`).
+- **Kontrol Volume:** Atur tingkat volume suara secara presisi dari 0% hingga 200%.
+- **Audio Stabil & Auto Leave:** Menggunakan optimasi stream (`-reconnect_at_eof 1`) untuk stabilitas lagu berdurasi panjang, serta fitur otomatis keluar dari voice channel jika tidak ada pengguna lain di dalamnya.
 
 ### 👋 2. Welcome & Goodbye System
 Sambut anggota baru dan berikan salam perpisahan yang berkesan secara otomatis.
 - **Kartu Selamat Datang (Welcome Card):** Membuat gambar selamat datang secara dinamis menggunakan modul `Pillow` yang menampilkan avatar dan nama pengguna baru.
 - **Pesan Kustom:** Pesan selamat datang dan perpisahan dapat dikonfigurasi secara fleksibel per server.
-- **Variabel Dinamis:** Gunakan `{member}`, `{member_name}`, `{server}`, dan `{member_count}` dalam pesan Anda.
+- **Variabel Dinamis:** Gunakan `{member}`, `{member.mention}` (untuk mention langsung), `{member_name}`, `{server}`, dan `{member_count}` dalam pesan Anda.
 
 ### 🎭 3. Role Select Menu (Self-Assignable Roles)
 Memudahkan admin untuk membuat menu pemilihan role agar anggota dapat mengambil peran mereka sendiri tanpa perlu bantuan staff.
@@ -105,13 +108,16 @@ python main.py
 | Prefix Command | Slash Command | Deskripsi | Aliases |
 | :--- | :--- | :--- | :--- |
 | `!play <judul/URL>` | `/play <judul/URL>` | Memutar lagu dari YouTube ke Voice Channel | `!p` |
+| `!search <query>` | `/search <query>` | Mencari hingga 5 lagu pilihan dari YouTube | - |
+| `!select <1-5>` | `/select <index>` | Memutar lagu dari daftar hasil pencarian terakhir | - |
+| `!lyrics [romaji]` | `/lyrics [romaji]` | Menampilkan lirik lagu yang sedang diputar (gunakan `true` untuk romaji) | - |
 | `!pause` | `/pause` | Menjeda musik yang sedang diputar | - |
 | `!resume` | `/resume` | Melanjutkan musik yang dijeda | - |
 | `!skip` | `/skip` | Melewati lagu saat ini ke lagu berikutnya | `!s` |
 | `!stop` | `/stop` | Menghentikan pemutaran musik dan keluar dari Voice Channel | - |
 | `!volume <0-200>` | `/volume <volume>` | Mengatur volume suara pemutaran musik | `!vol` |
 | `!queue` | `/queue` | Menampilkan daftar antrean lagu saat ini | `!q` |
-| `!nowplaying` | `/nowplaying` | Menampilkan informasi lagu yang sedang diputar | `!np` |
+| `!nowplaying` | `/nowplaying` | Menampilkan informasi lagu yang sedang diputar & tombol interaktif | `!np` |
 | `!shuffle` | `/shuffle` | Mengacak urutan antrean lagu | - |
 | `!loop <off/song/queue>`| `/loop <mode>` | Mengatur mode pengulangan lagu | `!repeat` |
 | `!remove <index>` | `/remove <index>` | Menghapus lagu dari antrean berdasarkan nomor indeks | - |
