@@ -129,6 +129,8 @@ async def help_command(ctx, category: str = None):
             color=discord.Color.purple()
         )
         embed.add_field(name=f"{p}play <song> or /play", value="Play a song from YouTube", inline=False)
+        embed.add_field(name=f"{p}search <query> or /search", value="Search for up to 5 songs on YouTube", inline=False)
+        embed.add_field(name=f"{p}select <index> or /select", value="Play a song from the last search results", inline=False)
         embed.add_field(name=f"{p}pause or /pause", value="Pause current song", inline=False)
         embed.add_field(name=f"{p}resume or /resume", value="Resume paused song", inline=False)
         embed.add_field(name=f"{p}skip or /skip", value="Skip to next song", inline=False)
