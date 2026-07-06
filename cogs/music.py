@@ -1,19 +1,25 @@
 """
 Music System Cog
 Handles all music-related commands (Supports Prefix & Slash Commands)
+Optimized and Bug-fixed version.
 """
 
 import discord
 from discord.ext import commands
-from discord import app_commands # Import untuk slash command features
+from discord import app_commands
 import yt_dlp
 import asyncio
-from collections import deque
 import random
+import re
+import time
+import urllib.parse
+import aiohttp
+import traceback
+from collections import deque
 
 class NowPlayingView(discord.ui.View):
     def __init__(self, cog, ctx):
-        super().__init__(timeout=None) # Keep buttons active
+        super().__init__(timeout=None)
         self.cog = cog
         self.ctx = ctx
         self.update_buttons()
@@ -21,14 +27,12 @@ class NowPlayingView(discord.ui.View):
     def update_buttons(self):
         guild_id = self.ctx.guild.id
         
-        # Update Pause/Resume button style and label
         voice_client = self.ctx.guild.voice_client
         is_paused = voice_client.is_paused() if voice_client else False
         self.pause_resume.label = "Resume" if is_paused else "Pause"
         self.pause_resume.emoji = "▶️" if is_paused else "⏸️"
         self.pause_resume.style = discord.ButtonStyle.green if is_paused else discord.ButtonStyle.blurple
         
-        # Update Loop button
         loop_mode = self.cog.loop_mode.get(guild_id, 'off')
         loop_labels = {'off': 'Loop: Off', 'song': 'Loop: Song', 'queue': 'Loop: Queue'}
         loop_emojis = {'off': '🔁', 'song': '🔂', 'queue': '🔁'}
@@ -41,7 +45,6 @@ class NowPlayingView(discord.ui.View):
         self.loop_toggle.emoji = loop_emojis[loop_mode]
         self.loop_toggle.style = loop_styles[loop_mode]
         
-        # Update Autoplay button
         autoplay_active = self.cog.autoplay.get(guild_id, False)
         self.autoplay_toggle.label = f"Autoplay: {'On' if autoplay_active else 'Off'}"
         self.autoplay_toggle.style = discord.ButtonStyle.green if autoplay_active else discord.ButtonStyle.grey
@@ -59,16 +62,13 @@ class NowPlayingView(discord.ui.View):
         if not history_list:
             return await interaction.response.send_message("❌ No previous songs in history!", ephemeral=True)
             
-        # Pop the last song from history
         prev_song = history_list.pop()
         
-        # Prepends
         if guild_id in self.cog.now_playing:
             self.cog.queue[guild_id].appendleft(self.cog.now_playing[guild_id])
             
         self.cog.queue[guild_id].appendleft(prev_song)
         
-        # Stop current playback, play_next will trigger automatically
         if self.ctx.voice_client:
             self.ctx.voice_client.stop()
             await interaction.response.send_message("⏮️ **Playing previous song...**", ephemeral=True)
@@ -85,13 +85,11 @@ class NowPlayingView(discord.ui.View):
         if voice_client.is_playing():
             voice_client.pause()
             if guild_id in self.cog.start_time and self.cog.start_time[guild_id] is not None:
-                import time
                 self.cog.accumulated_time[guild_id] += time.time() - self.cog.start_time[guild_id]
                 self.cog.start_time[guild_id] = None
             await interaction.response.send_message("⏸️ **Paused**", ephemeral=True)
         elif voice_client.is_paused():
             voice_client.resume()
-            import time
             self.cog.start_time[guild_id] = time.time()
             await interaction.response.send_message("▶️ **Resumed**", ephemeral=True)
         else:
@@ -115,7 +113,6 @@ class NowPlayingView(discord.ui.View):
         guild_id = self.ctx.guild.id
         if guild_id in self.cog.queue and len(self.cog.queue[guild_id]) > 1:
             queue_list = list(self.cog.queue[guild_id])
-            import random
             random.shuffle(queue_list)
             self.cog.queue[guild_id] = deque(queue_list)
             await interaction.response.send_message("🔀 **Queue shuffled!**", ephemeral=True)
@@ -225,17 +222,18 @@ class NowPlayingView(discord.ui.View):
 class Music(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        self.session = None  # Global aiohttp session
         
         # Music state storage
-        self.queue = {}           # Song queues per guild
-        self.now_playing = {}     # Current song per guild
-        self.loop_mode = {}       # Loop mode per guild
-        self.volume_level = {}    # Volume per guild
-        self.search_results = {}  # Last search results per guild
-        self.start_time = {}      # Play start time per guild
-        self.accumulated_time = {} # Accumulated play time before last pause per guild
-        self.history = {}         # Played songs history per guild
-        self.autoplay = {}        # Autoplay toggle state per guild
+        self.queue = {}           
+        self.now_playing = {}     
+        self.loop_mode = {}       
+        self.volume_level = {}    
+        self.search_results = {}  
+        self.start_time = {}      
+        self.accumulated_time = {} 
+        self.history = {}         
+        self.autoplay = {}        
         
         # YouTube DL options
         self.ydl_opts = {
@@ -256,36 +254,61 @@ class Music(commands.Cog):
             'before_options': '-reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 5',
             'options': '-vn'
         }
+
+    async def cog_load(self):
+        # FIX: Buat 1 session aiohttp global dengan timeout yang benar
+        timeout = aiohttp.ClientTimeout(total=15)
+        self.session = aiohttp.ClientSession(timeout=timeout, headers={"User-Agent": "KaelAbot-Discord-Bot/1.0.0"})
+
+    async def cog_unload(self):
+        # FIX: Tutup session saat cog di-unload untuk mencegah memory leak
+        if self.session:
+            await self.session.close()
+
+    def cleanup_guild_state(self, guild_id):
+        """Bersihkan state guild untuk mencegah memory leak"""
+        states = [self.queue, self.now_playing, self.loop_mode, self.volume_level, 
+                  self.search_results, self.start_time, self.accumulated_time, 
+                  self.history, self.autoplay]
+        for state in states:
+            state.pop(guild_id, None)
     
     async def ensure_voice(self, ctx):
-        """Ensure bot is connected to voice"""
+        """Ensure bot is connected to voice with proper error handling"""
         if not ctx.author.voice:
             await ctx.send("❌ You must be in a voice channel!")
             return False
             
-        if ctx.voice_client is None:
-            await ctx.author.voice.channel.connect()
+        if not ctx.voice_client:
+            try:
+                await ctx.author.voice.channel.connect(timeout=15)
+            except asyncio.TimeoutError:
+                await ctx.send("❌ Timed out trying to connect to voice channel.")
+                return False
+            except Exception as e:
+                await ctx.send(f"❌ Could not connect to voice channel: {e}")
+                return False
         elif ctx.voice_client.channel != ctx.author.voice.channel:
             await ctx.voice_client.move_to(ctx.author.voice.channel)
             
         return True
-    
+
+    # FIX: Bungkus yt_dlp di asyncio.to_thread agar tidak memblokir event loop (Bot tidak akan lagi freeze saat search)
     async def search_song(self, query):
-        """Search for a song on YouTube"""
-        try:
+        """Search for a song on YouTube (Non-blocking)"""
+        def _sync_search():
             with yt_dlp.YoutubeDL(self.ydl_opts) as ydl:
                 if not query.startswith('http'):
                     query = f"ytsearch:{query}"
                 
                 info = ydl.extract_info(query, download=False)
                 
-                if 'entries' in info:
-                    if len(info['entries']) > 0:
-                        info = info['entries'][0]
-                    else:
-                        return None
+                if 'entries' in info and info['entries']:
+                    info = info['entries'][0]
+                elif 'entries' in info:
+                    return None
                 
-                song = {
+                return {
                     'title': info.get('title', 'Unknown Title'),
                     'url': info.get('webpage_url', ''),
                     'duration': info.get('duration', 0),
@@ -295,17 +318,15 @@ class Music(commands.Cog):
                     'views': info.get('view_count', 0)
                 }
 
-                print(song)
-                
-                return song
-                
+        try:
+            return await asyncio.to_thread(_sync_search)
         except Exception as e:
             print(f"Search error: {e}")
             return None
 
     async def search_multiple_songs(self, query, limit=5):
-        """Search for up to limit songs on YouTube"""
-        try:
+        """Search for up to limit songs on YouTube (Non-blocking)"""
+        def _sync_search():
             with yt_dlp.YoutubeDL(self.ydl_opts) as ydl:
                 if not query.startswith('http'):
                     query = f"ytsearch{limit}:{query}"
@@ -313,14 +334,10 @@ class Music(commands.Cog):
                 info = ydl.extract_info(query, download=False)
                 
                 songs = []
-                if 'entries' in info:
-                    entries = info['entries']
-                else:
-                    entries = [info]
+                entries = info.get('entries', [info]) if info else []
                 
                 for entry in entries:
-                    if not entry:
-                        continue
+                    if not entry: continue
                     songs.append({
                         'title': entry.get('title', 'Unknown Title'),
                         'url': entry.get('webpage_url', ''),
@@ -330,10 +347,11 @@ class Music(commands.Cog):
                         'uploader': entry.get('uploader', 'Unknown'),
                         'views': entry.get('view_count', 0)
                     })
-                    if len(songs) >= limit:
-                        break
-                
+                    if len(songs) >= limit: break
                 return songs
+
+        try:
+            return await asyncio.to_thread(_sync_search)
         except Exception as e:
             print(f"Multiple search error: {e}")
             return []
@@ -342,58 +360,48 @@ class Music(commands.Cog):
         """Play the next song in queue"""
         guild_id = ctx.guild.id
         
-        # Save current song to history if we are moving to a new song
+        # Cek apakah voice client masih valid
+        if not ctx.voice_client or not ctx.voice_client.is_connected():
+            self.cleanup_guild_state(guild_id)
+            return
+
         old_song = self.now_playing.get(guild_id)
+        source = None
+        song_to_play = None
         
-        # Determine next song source
         if self.loop_mode.get(guild_id) == 'song' and old_song:
-            source = old_song.get('source')
-        elif self.queue.get(guild_id) and len(self.queue[guild_id]) > 0:
+            song_to_play = old_song
+        elif self.queue.get(guild_id):
             if old_song:
-                self.history.setdefault(guild_id, []).append(old_song)
-                if len(self.history[guild_id]) > 20:
-                    self.history[guild_id].pop(0)
-            song = self.queue[guild_id].popleft()
-            self.now_playing[guild_id] = song
+                self.history.setdefault(guild_id, deque(maxlen=20)).append(old_song)
+            song_to_play = self.queue[guild_id].popleft()
+            self.now_playing[guild_id] = song_to_play
             
             if self.loop_mode.get(guild_id) == 'queue':
-                self.queue[guild_id].append(song)
-            
-            source = song.get('source')
+                self.queue[guild_id].append(song_to_play)
         elif self.autoplay.get(guild_id, False) and old_song:
             if old_song:
-                self.history.setdefault(guild_id, []).append(old_song)
-                if len(self.history[guild_id]) > 20:
-                    self.history[guild_id].pop(0)
+                self.history.setdefault(guild_id, deque(maxlen=20)).append(old_song)
             
-            # Send notification info
             await ctx.send("📻 **Queue ended. Autoplay searching for next song...**")
-            
-            query = old_song['title']
+            query = f"{old_song['title']} mix" # Tambah 'mix' agar dapat lagu beda
             songs = await self.search_multiple_songs(query, limit=3)
-            autoplay_song = None
+            
             for s in songs:
                 if s['url'] != old_song['url']:
-                    autoplay_song = s
+                    song_to_play = s
                     break
-            if not autoplay_song and songs:
-                autoplay_song = songs[0]
+            if not song_to_play and songs:
+                song_to_play = songs[0]
                 
-            if autoplay_song:
-                self.now_playing[guild_id] = autoplay_song
-                source = autoplay_song.get('source')
-            else:
-                self.now_playing.pop(guild_id, None)
-                source = None
+            if song_to_play:
+                self.now_playing[guild_id] = song_to_play
         else:
             if old_song:
-                self.history.setdefault(guild_id, []).append(old_song)
-                if len(self.history[guild_id]) > 20:
-                    self.history[guild_id].pop(0)
+                self.history.setdefault(guild_id, deque(maxlen=20)).append(old_song)
             self.now_playing.pop(guild_id, None)
-            source = None
-        
-        if not source:
+
+        if not song_to_play:
             embed = discord.Embed(
                 title="📭 Queue Empty",
                 description="No more songs in queue. Leaving voice channel in 60 seconds.",
@@ -404,54 +412,40 @@ class Music(commands.Cog):
             await asyncio.sleep(60)
             if ctx.voice_client and not ctx.voice_client.is_playing():
                 await ctx.voice_client.disconnect()
+                self.cleanup_guild_state(guild_id)
             return
         
-        if source and ctx.voice_client:
-            try:
-                audio_source = discord.FFmpegPCMAudio(
-                    source,
-                    **self.ffmpeg_opts
-                )
+        try:
+            audio_source = discord.FFmpegPCMAudio(song_to_play['source'], **self.ffmpeg_opts)
+            
+            if guild_id in self.volume_level:
+                audio_source = discord.PCMVolumeTransformer(audio_source, volume=self.volume_level[guild_id])
+            
+            def after_playing(error):
+                if error:
+                    print(f"Playback error in after callback: {error}")
+                asyncio.run_coroutine_threadsafe(self.play_next(ctx), self.bot.loop)
 
-                print(vars(audio_source))
-                
-                if guild_id in self.volume_level:
-                    audio_source = discord.PCMVolumeTransformer(
-                        audio_source,
-                        volume=self.volume_level[guild_id]
-                    )
-                
-                def after_playing(error):
-                    if error:
-                        print(f"Playback error in after callback: {error}")
-                    asyncio.run_coroutine_threadsafe(
-                        self.play_next(ctx), 
-                        self.bot.loop
-                    )
+            ctx.voice_client.play(audio_source, after=after_playing)
+            
+            self.start_time[guild_id] = time.time()
+            self.accumulated_time[guild_id] = 0.0
+            
+            embed = self.get_now_playing_embed(guild_id)
+            view = NowPlayingView(self, ctx)
+            await ctx.send(embed=embed, view=view)
+            
+        except Exception as e:
+            print(f"Playback error: {e}")
+            await ctx.send(f"❌ Error playing song: {e}")
+            # Skip lagu yang error dan coba putar lagu berikutnya
+            await self.play_next(ctx)
 
-                ctx.voice_client.play(
-                    audio_source,
-                    after=after_playing
-                )
-                
-                import time
-                self.start_time[guild_id] = time.time()
-                self.accumulated_time[guild_id] = 0.0
-                
-                embed = self.get_now_playing_embed(guild_id)
-                view = NowPlayingView(self, ctx)
-                await ctx.send(embed=embed, view=view)
-                
-            except Exception as e:
-                print(f"Playback error: {e}")
-                await ctx.send(f"❌ Error playing song: {e}")
-                await self.play_next(ctx)
     def get_now_playing_embed(self, guild_id):
         if guild_id not in self.now_playing:
             return None
         song = self.now_playing[guild_id]
         
-        import time
         elapsed = 0.0
         is_paused = False
         if guild_id in self.start_time:
@@ -464,19 +458,12 @@ class Music(commands.Cog):
         elapsed = int(elapsed)
         duration = song['duration']
         
-        elapsed_mins = elapsed // 60
-        elapsed_secs = elapsed % 60
-        duration_mins = duration // 60
-        duration_secs = duration % 60
-        
-        elapsed_str = f"{elapsed_mins}:{elapsed_secs:02d}"
-        duration_str = f"{duration_mins}:{duration_secs:02d}"
+        elapsed_str = f"{elapsed // 60}:{elapsed % 60:02d}"
+        duration_str = f"{duration // 60}:{duration % 60:02d}"
         
         bar_length = 15
         if duration > 0:
-            ratio = elapsed / duration
-            if ratio > 1: ratio = 1
-            if ratio < 0: ratio = 0
+            ratio = max(0, min(1, elapsed / duration))
             filled = int(ratio * bar_length)
             bar = "▬" * filled + "🔘" + "▬" * (bar_length - filled - 1)
         else:
@@ -484,11 +471,7 @@ class Music(commands.Cog):
             
         progress_str = f"`{elapsed_str}` {bar} `{duration_str}`"
         
-        status_line = ""
-        if is_paused:
-            status_line += "⏸️ **Paused**  "
-        else:
-            status_line += "▶️ **Playing**  "
+        status_line = "⏸️ **Paused**  " if is_paused else "▶️ **Playing**  "
             
         loop_mode = self.loop_mode.get(guild_id, 'off')
         loop_emojis = {'off': '', 'song': '🔂', 'queue': '🔁'}
@@ -524,7 +507,6 @@ class Music(commands.Cog):
     @commands.hybrid_command(name='search', description="Search for up to 5 songs on YouTube")
     @app_commands.describe(query="The song name to search for")
     async def search(self, ctx: commands.Context, *, query: str):
-        """Search for up to 5 songs on YouTube"""
         await ctx.defer()
         
         songs = await self.search_multiple_songs(query, limit=5)
@@ -554,7 +536,6 @@ class Music(commands.Cog):
     @commands.hybrid_command(name='select', description="Play a song from the last search results")
     @app_commands.describe(index="The number (1-5) of the song to select")
     async def select(self, ctx: commands.Context, index: int):
-        """Play a song from the last search results"""
         await ctx.defer()
         
         guild_id = ctx.guild.id
@@ -587,18 +568,13 @@ class Music(commands.Cog):
                 description=f"**[{song['title']}]({song['url']})**",
                 color=discord.Color.green()
             )
-            embed.add_field(
-                name="Queue Position",
-                value=f"#{len(self.queue[guild_id])}",
-                inline=True
-            )
+            embed.add_field(name="Queue Position", value=f"#{len(self.queue[guild_id])}", inline=True)
             await ctx.send(embed=embed)
 
     @commands.hybrid_command(name='play', aliases=['p'], description="Play a song from YouTube")
     @app_commands.describe(query="The song name or YouTube URL to play")
     async def play(self, ctx: commands.Context, *, query: str):
-        """Play a song from YouTube"""
-        await ctx.defer() # Mencegah error "Interaction failed" pada slash command
+        await ctx.defer() 
         
         if not await self.ensure_voice(ctx):
             return
@@ -610,7 +586,6 @@ class Music(commands.Cog):
             self.loop_mode[guild_id] = 'off'
             self.volume_level[guild_id] = 1.0
         
-        # Search for song (typing indicator otomatis aktif karena defer)
         song = await self.search_song(query)
         
         if not song:
@@ -627,21 +602,15 @@ class Music(commands.Cog):
                 description=f"**[{song['title']}]({song['url']})**",
                 color=discord.Color.green()
             )
-            embed.add_field(
-                name="Queue Position",
-                value=f"#{len(self.queue[guild_id])}",
-                inline=True
-            )
+            embed.add_field(name="Queue Position", value=f"#{len(self.queue[guild_id])}", inline=True)
             await ctx.send(embed=embed)
     
     @commands.hybrid_command(name='pause', description="Pause the current song")
     async def pause(self, ctx: commands.Context):
-        """Pause the current song"""
         if ctx.voice_client and ctx.voice_client.is_playing():
             ctx.voice_client.pause()
             guild_id = ctx.guild.id
             if guild_id in self.start_time and self.start_time[guild_id] is not None:
-                import time
                 self.accumulated_time[guild_id] += time.time() - self.start_time[guild_id]
                 self.start_time[guild_id] = None
             await ctx.send("⏸️ **Paused**")
@@ -650,11 +619,9 @@ class Music(commands.Cog):
     
     @commands.hybrid_command(name='resume', description="Resume the paused song")
     async def resume(self, ctx: commands.Context):
-        """Resume the paused song"""
         if ctx.voice_client and ctx.voice_client.is_paused():
             ctx.voice_client.resume()
             guild_id = ctx.guild.id
-            import time
             self.start_time[guild_id] = time.time()
             await ctx.send("▶️ **Resumed**")
         else:
@@ -662,7 +629,6 @@ class Music(commands.Cog):
     
     @commands.hybrid_command(name='skip', aliases=['s'], description="Skip to the next song")
     async def skip(self, ctx: commands.Context):
-        """Skip to the next song"""
         if ctx.voice_client and (ctx.voice_client.is_playing() or ctx.voice_client.is_paused()):
             ctx.voice_client.stop()
             await ctx.send("⏭️ **Skipped!**")
@@ -671,16 +637,10 @@ class Music(commands.Cog):
     
     @commands.hybrid_command(name='stop', description="Stop music and clear queue")
     async def stop(self, ctx: commands.Context):
-        """Stop music and clear queue"""
         guild_id = ctx.guild.id
         
         if ctx.voice_client:
-            if guild_id in self.queue:
-                self.queue[guild_id].clear()
-                self.loop_mode[guild_id] = 'off'
-            self.start_time.pop(guild_id, None)
-            self.accumulated_time.pop(guild_id, None)
-            
+            self.cleanup_guild_state(guild_id)
             await ctx.voice_client.disconnect()
             await ctx.send("🛑 **Stopped and disconnected!**")
         else:
@@ -689,7 +649,6 @@ class Music(commands.Cog):
     @commands.hybrid_command(name='volume', aliases=['vol'], description="Set volume level (0-200)")
     @app_commands.describe(volume="Volume level from 0 to 200 (leave empty to check current)")
     async def volume(self, ctx: commands.Context, volume: int = None):
-        """Set volume level (0-200)"""
         if not ctx.voice_client:
             return await ctx.send("❌ I'm not in a voice channel!")
         
@@ -700,9 +659,8 @@ class Music(commands.Cog):
         if 0 <= volume <= 200:
             self.volume_level[ctx.guild.id] = volume / 100
             
-            if ctx.voice_client.source:
-                if hasattr(ctx.voice_client.source, 'volume'):
-                    ctx.voice_client.source.volume = volume / 100
+            if ctx.voice_client.source and hasattr(ctx.voice_client.source, 'volume'):
+                ctx.voice_client.source.volume = volume / 100
             
             bar_length = 20
             filled = int(bar_length * volume / 200)
@@ -714,8 +672,7 @@ class Music(commands.Cog):
     
     @commands.hybrid_command(name='queue', aliases=['q'], description="Show the current queue")
     async def show_queue(self, ctx: commands.Context):
-        """Show the current queue"""
-        await ctx.defer() # Defer untuk mencegah timeout jika queue panjang
+        await ctx.defer() 
         guild_id = ctx.guild.id
         
         if guild_id not in self.queue or len(self.queue[guild_id]) == 0:
@@ -732,7 +689,6 @@ class Music(commands.Cog):
         for i, song in enumerate(self.queue[guild_id], 1):
             duration = song['duration']
             total_duration += duration
-            
             mins = duration // 60
             secs = duration % 60
             
@@ -744,11 +700,7 @@ class Music(commands.Cog):
                     queue_list += f"\n*...and {remaining} more songs*"
                 break
         
-        embed = discord.Embed(
-            title="📋 Music Queue",
-            description=queue_list,
-            color=discord.Color.blue()
-        )
+        embed = discord.Embed(title="📋 Music Queue", description=queue_list, color=discord.Color.blue())
         
         total_mins = total_duration // 60
         total_secs = total_duration % 60
@@ -766,24 +718,18 @@ class Music(commands.Cog):
         
         if guild_id in self.now_playing:
             current = self.now_playing[guild_id]
-            embed.add_field(
-                name="🎵 Now Playing",
-                value=f"**{current['title'][:50]}**",
-                inline=False
-            )
+            embed.add_field(name="🎵 Now Playing", value=f"**{current['title'][:50]}**", inline=False)
         
         await ctx.send(embed=embed)
     
     @commands.hybrid_command(name='shuffle', description="Shuffle the queue")
     async def shuffle(self, ctx: commands.Context):
-        """Shuffle the queue"""
         guild_id = ctx.guild.id
         
         if guild_id in self.queue and len(self.queue[guild_id]) > 1:
             queue_list = list(self.queue[guild_id])
             random.shuffle(queue_list)
             self.queue[guild_id] = deque(queue_list)
-            
             await ctx.send("🔀 **Queue shuffled!**")
         else:
             await ctx.send("❌ Queue needs at least 2 songs to shuffle!")
@@ -796,13 +742,11 @@ class Music(commands.Cog):
         app_commands.Choice(name="Queue", value="queue")
     ])
     async def loop(self, ctx: commands.Context, mode: str = None):
-        """Set loop mode: off, song, queue"""
         valid_modes = ['off', 'song', 'queue']
         
         if mode is None:
             current = self.loop_mode.get(ctx.guild.id, 'off')
-            return await ctx.send(f"🔁 Current loop mode: **{current}**\n"
-                                f"Available: `off/song/queue`")
+            return await ctx.send(f"🔁 Current loop mode: **{current}**\nAvailable: `off/song/queue`")
         
         mode = mode.lower()
         if mode not in valid_modes:
@@ -810,23 +754,13 @@ class Music(commands.Cog):
         
         self.loop_mode[ctx.guild.id] = mode
         
-        emoji_map = {
-            'off': '❌',
-            'song': '🔂',
-            'queue': '🔁'
-        }
-        
-        descriptions = {
-            'off': 'Loop disabled',
-            'song': 'Looping current song',
-            'queue': 'Looping entire queue'
-        }
+        emoji_map = {'off': '❌', 'song': '🔂', 'queue': '🔁'}
+        descriptions = {'off': 'Loop disabled', 'song': 'Looping current song', 'queue': 'Looping entire queue'}
         
         await ctx.send(f"{emoji_map[mode]} **{descriptions[mode]}**")
     
     @commands.hybrid_command(name='nowplaying', aliases=['np'], description="Show currently playing song")
     async def now_playing(self, ctx: commands.Context):
-        """Show currently playing song"""
         guild_id = ctx.guild.id
         
         if guild_id not in self.now_playing:
@@ -839,7 +773,6 @@ class Music(commands.Cog):
     @commands.hybrid_command(name='lyrics', description="Show lyrics of the currently playing song")
     @app_commands.describe(romaji="Convert Japanese/Chinese/Korean lyrics to Romaji/Pinyin/Romanized form")
     async def lyrics(self, ctx: commands.Context, romaji: bool = False):
-        """Show lyrics of the currently playing song"""
         await ctx.defer()
         guild_id = ctx.guild.id
         
@@ -848,100 +781,63 @@ class Music(commands.Cog):
             
         song_title = self.now_playing[guild_id]['title']
         
-        # Clean title to get better search results
-        import re
-        clean_title = song_title
-        clean_title = re.sub(r'\s*[\(\[][^)]*?(?:official|music|video|lyric|audio|hd|hq|version|edit|remix|ft\.|feat\.)[^)]*?[\)\]]', '', clean_title, flags=re.IGNORECASE)
+        # Clean title
+        clean_title = re.sub(r'\s*[\(\[][^)]*?(?:official|music|video|lyric|audio|hd|hq|version|edit|remix|ft\.|feat\.)[^)]*?[\)\]]', '', song_title, flags=re.IGNORECASE)
         clean_title = re.sub(r'\s*-\s*(?:official|music|video|lyric|audio|hd|hq|version|edit|remix|ft\.|feat\.).*$', '', clean_title, flags=re.IGNORECASE)
-        
-        # Remove Japanese/Chinese brackets and their contents
-        clean_title = re.sub(r'【[^】]*】', '', clean_title)
-        clean_title = re.sub(r'「[^」]*」', '', clean_title)
-        clean_title = re.sub(r'『[^』]*』', '', clean_title)
-        clean_title = re.sub(r'（[^）]*）', '', clean_title)
-        clean_title = re.sub(r'［[^］]*］', '', clean_title)
-        clean_title = clean_title.strip()
-        
-        # If cleaning results in empty string, fallback to original title
-        if not clean_title:
-            clean_title = song_title
+        clean_title = re.sub(r'[【「『（［].*?[】」』）］]', '', clean_title)
+        clean_title = clean_title.strip() or song_title
             
-        import aiohttp
-        import urllib.parse
         url = f"https://lrclib.net/api/search?q={urllib.parse.quote(clean_title)}"
         
         try:
-            headers = {"User-Agent": "KaelAbot-Discord-Bot/1.0.0 (https://github.com/AhmadF1kr1/Fiku-Bot)"}
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, headers=headers, timeout=10) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        if data:
-                            # Use the first result that has plain lyrics
-                            song_data = None
-                            for item in data:
-                                if item.get('plainLyrics'):
-                                    song_data = item
-                                    break
-                            
-                            if not song_data:
-                                # Fallback to first item if none have plain lyrics
-                                song_data = data[0]
+            # FIX: Gunakan self.session global, bukan membuat session baru
+            async with self.session.get(url) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    if data:
+                        song_data = next((item for item in data if item.get('plainLyrics')), data[0])
                                 
-                            lyrics_text = song_data.get('plainLyrics')
-                            if not lyrics_text:
-                                return await ctx.send(f"❌ Could not find lyrics for **{song_title}**.")
-                                
-                            is_romanized = False
-                            if romaji:
-                                import urllib.parse
-                                # Replace newlines with ' | ' to preserve formatting
-                                formatted_lyrics = lyrics_text.replace('\n', ' | ')
-                                # Truncate to 5000 chars to avoid Google Translate limit
-                                query_text = formatted_lyrics[:5000]
-                                translit_url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=en&dt=rm&q={urllib.parse.quote(query_text)}"
-                                try:
-                                    tr_headers = {'User-Agent': 'Mozilla/5.0'}
-                                    async with session.get(translit_url, headers=tr_headers, timeout=10) as tr_response:
-                                        if tr_response.status == 200:
-                                            tr_data = await tr_response.json()
-                                            romanized_parts = []
-                                            if tr_data and tr_data[0]:
-                                                for item in tr_data[0]:
-                                                    if len(item) > 3 and item[3]:
-                                                        romanized_parts.append(item[3])
-                                            if romanized_parts:
-                                                romanized_text = "".join(romanized_parts)
-                                                # Split back by pipeline symbol and join with newlines
-                                                lines = re.split(r'\s*\|\s*', romanized_text)
-                                                lyrics_text = '\n'.join(lines).strip()
-                                                is_romanized = True
-                                except Exception as e:
-                                    print(f"Failed to romanize lyrics: {e}")
-                                    # We fall back to original lyrics
-
-                            # Prepare embed
-                            title = song_data.get('trackName', song_title)
-                            artist = song_data.get('artistName', 'Unknown Artist')
-                            
-                            # Handle length limits
-                            # Embed description character limit is 4096.
-                            if len(lyrics_text) > 4000:
-                                lyrics_text = lyrics_text[:3990] + "\n\n... (truncated)"
-                                
-                            embed = discord.Embed(
-                                title=f"🎶 Lyrics for: {title}" + (" (Romaji/Romanized)" if is_romanized else ""),
-                                description=f"**Artist:** {artist}\n\n{lyrics_text}",
-                                color=discord.Color.blue()
-                            )
-                            embed.set_footer(text="Lyrics provided by LRCLIB" + (" | Transliterated via Google Translate" if is_romanized else ""))
-                            return await ctx.send(embed=embed)
-                        else:
+                        lyrics_text = song_data.get('plainLyrics')
+                        if not lyrics_text:
                             return await ctx.send(f"❌ Could not find lyrics for **{song_title}**.")
+                                
+                        is_romanized = False
+                        if romaji:
+                            formatted_lyrics = lyrics_text.replace('\n', ' | ')[:5000]
+                            translit_url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=en&dt=rm&q={urllib.parse.quote(formatted_lyrics)}"
+                            try:
+                                async with self.session.get(translit_url, headers={'User-Agent': 'Mozilla/5.0'}) as tr_response:
+                                    if tr_response.status == 200:
+                                        tr_data = await tr_response.json()
+                                        romanized_parts = [item[3] for item in tr_data[0] if len(item) > 3 and item[3]] if tr_data and tr_data[0] else []
+                                        if romanized_parts:
+                                            romanized_text = "".join(romanized_parts)
+                                            lyrics_text = '\n'.join(re.split(r'\s*\|\s*', romanized_text)).strip()
+                                            is_romanized = True
+                            except Exception as e:
+                                print(f"Failed to romanize lyrics: {e}")
+
+                        title = song_data.get('trackName', song_title)
+                        artist = song_data.get('artistName', 'Unknown Artist')
+                        
+                        if len(lyrics_text) > 4000:
+                            lyrics_text = lyrics_text[:3990] + "\n\n... (truncated)"
+                                
+                        embed = discord.Embed(
+                            title=f"🎶 Lyrics for: {title}" + (" (Romanized)" if is_romanized else ""),
+                            description=f"**Artist:** {artist}\n\n{lyrics_text}",
+                            color=discord.Color.blue()
+                        )
+                        embed.set_footer(text="Lyrics provided by LRCLIB" + (" | Transliterated via Google Translate" if is_romanized else ""))
+                        return await ctx.send(embed=embed)
                     else:
-                        return await ctx.send("❌ Error fetching lyrics from the service. Please try again later.")
+                        return await ctx.send(f"❌ Could not find lyrics for **{song_title}**.")
+                else:
+                    return await ctx.send("❌ Error fetching lyrics from the service. Please try again later.")
+                    
+        except asyncio.TimeoutError:
+            return await ctx.send("❌ Lyrics server is taking too long to respond. Please try again later.")
         except Exception as e:
-            import traceback
             traceback.print_exc()
             print(f"Lyrics fetch error: {e}")
             return await ctx.send("❌ An error occurred while fetching the lyrics.")
@@ -949,7 +845,6 @@ class Music(commands.Cog):
     @commands.hybrid_command(name='remove', description="Remove a song from queue by index")
     @app_commands.describe(index="The queue position number to remove (1-based)")
     async def remove(self, ctx: commands.Context, index: int):
-        """Remove a song from queue by index"""
         guild_id = ctx.guild.id
         
         if guild_id not in self.queue or len(self.queue[guild_id]) == 0:
@@ -959,42 +854,46 @@ class Music(commands.Cog):
             queue_list = list(self.queue[guild_id])
             removed_song = queue_list.pop(index - 1)
             self.queue[guild_id] = deque(queue_list)
-            
             await ctx.send(f"🗑️ Removed: **{removed_song['title']}**")
         else:
             await ctx.send(f"❌ Invalid index! Queue has {len(self.queue[guild_id])} songs.")
     
     @commands.hybrid_command(name='clearqueue', aliases=['cq'], description="Clear the entire queue")
     async def clear_queue(self, ctx: commands.Context):
-        """Clear the entire queue"""
         guild_id = ctx.guild.id
         
-        if guild_id in self.queue:
+        if guild_id in self.queue and len(self.queue[guild_id]) > 0:
             self.queue[guild_id].clear()
             await ctx.send("🗑️ **Queue cleared!**")
         else:
             await ctx.send("❌ Queue is already empty!")
-    
+
     # =========================
     # LISTENERS
     # =========================
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member, before, after):
-        """Leave if alone in voice channel"""
+        """Leave if alone in voice channel & cleanup state"""
         if member.id == self.bot.user.id:
+            # Jika bot yang keluar dari voice channel, bersihkan state
+            if before.channel and not after.channel:
+                self.cleanup_guild_state(member.guild.id)
             return
         
         voice_client = member.guild.voice_client
         if voice_client and voice_client.channel:
             if len(voice_client.channel.members) == 1:
                 await asyncio.sleep(60)
-                voice_client = member.guild.voice_client # Refresh
+                voice_client = member.guild.voice_client 
                 if voice_client and voice_client.channel and len(voice_client.channel.members) == 1:
                     await voice_client.disconnect()
-                    guild_id = member.guild.id
-                    if guild_id in self.queue:
-                        self.queue[guild_id].clear()
+                    self.cleanup_guild_state(member.guild.id)
+
+    @commands.Cog.listener()
+    async def on_guild_remove(self, guild):
+        """Cleanup state when bot is removed from a guild"""
+        self.cleanup_guild_state(guild.id)
 
 async def setup(bot):
     await bot.add_cog(Music(bot))
