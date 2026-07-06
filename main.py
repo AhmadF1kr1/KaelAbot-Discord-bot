@@ -96,7 +96,6 @@ async def ping(ctx):
     )
     await ctx.send(embed=embed)
 
-@bot.hybrid_command(name='help')
 @app_commands.describe(category="Pilih kategori command yang ingin dilihat")
 @app_commands.choices(category=[
     app_commands.Choice(name="Music", value="music"),
@@ -104,6 +103,7 @@ async def ping(ctx):
     app_commands.Choice(name="RPG", value="rpg"),
     app_commands.Choice(name="RoleMenu", value="rolemenu")
 ])
+@bot.hybrid_command(name='help')
 async def help_command(ctx, category: str = None):
     """Show help menu"""
     # Gunakan ctx.prefix agar dinamis

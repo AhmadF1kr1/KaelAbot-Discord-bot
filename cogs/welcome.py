@@ -12,6 +12,7 @@ import io
 import requests
 import json
 import os
+import aiohttp
 
 class Welcome(commands.Cog):
     def __init__(self, bot):
@@ -63,8 +64,10 @@ class Welcome(commands.Cog):
 
             try:
                 avatar_url = member.display_avatar.url
-                avatar_response = requests.get(avatar_url)
-                avatar = Image.open(io.BytesIO(avatar_response.content)).resize((150, 150))
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(avatar_url) as resp:
+                        avatar_bytes = await resp.read()
+                        avatar = Image.open(io.BytesIO(avatar_bytes)).resize((150, 150))
 
                 mask = Image.new('L', (150, 150), 0)
                 ImageDraw.Draw(mask).ellipse((0, 0, 150, 150), fill=255)
@@ -74,7 +77,8 @@ class Welcome(commands.Cog):
 
                 img.paste(border, (45, 70), border)
                 img.paste(avatar, (50, 75), mask)
-            except:
+            except Exception as e:
+                print(f"Error loading avatar: {e}")
                 draw.ellipse([50, 75, 200, 225], fill=(114, 137, 218))
 
             try:
@@ -275,6 +279,7 @@ class Welcome(commands.Cog):
         message = config['message']
         
         # FIX: Gunakan <@ID> untuk {member} agar Discord merender nama user
+        message = message.replace('{member.mention}', f"<@{ctx.author.id}>")
         message = message.replace('{member}', f"<@{ctx.author.id}>")
         message = message.replace('{member_name}', ctx.author.name)
         message = message.replace('{server}', ctx.guild.name)

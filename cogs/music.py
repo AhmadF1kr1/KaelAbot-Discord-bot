@@ -369,7 +369,7 @@ class Music(commands.Cog):
             # Send notification info
             await ctx.send("📻 **Queue ended. Autoplay searching for next song...**")
             
-            query = f"related to {old_song['title']}"
+            query = old_song['title']
             songs = await self.search_multiple_songs(query, limit=3)
             autoplay_song = None
             for s in songs:
@@ -989,6 +989,7 @@ class Music(commands.Cog):
         if voice_client and voice_client.channel:
             if len(voice_client.channel.members) == 1:
                 await asyncio.sleep(60)
+                voice_client = member.guild.voice_client # Refresh
                 if voice_client and voice_client.channel and len(voice_client.channel.members) == 1:
                     await voice_client.disconnect()
                     guild_id = member.guild.id

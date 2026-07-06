@@ -284,7 +284,10 @@ class RolePickerDropdown(discord.ui.Select):
     async def callback(self, interaction: discord.Interaction):
         picked = {int(v) for v in self.values}
         for r in self.roles:
-            (self.selected_set.add, self.selected_set.discard)[r.id not in picked](r.id)
+            if r.id not in picked:
+                self.selected_set.discard(r.id)
+            else:
+                self.selected_set.add(r.id)
         
         self.placeholder = f"Selected: {len(self.selected_set)} roles"
         for opt in self.options:
@@ -494,8 +497,9 @@ class RoleSelect(commands.Cog):
             return await ctx.send("❌ Format: `Title | all` atau `Title | filter keyword`")
         
         title = parts[0].strip()
-        filter_cmd = parts[1].strip().lower()
-        keyword = parts[2].strip().lower() if len(parts) > 2 else None
+        filter_parts = parts[1].strip().lower().split()
+        filter_cmd = filter_parts[0]
+        keyword = filter_parts[1] if len(filter_parts) > 1 else None
         
         roles = self._get_available_roles(ctx)
         
