@@ -15,6 +15,7 @@ build/
 data/rpg_data.json
 data/welcome_config.json
 data/role_select_config.json
+data/music_cache/
 
 # IDE
 .vscode/

@@ -12,6 +12,17 @@ from collections import deque
 import random
 import aiohttp
 import pykakasi
+from difflib import SequenceMatcher
+import os
+import re
+import time
+import urllib.parse
+from pathlib import Path
+
+try:
+    import lyricsgenius
+except ImportError:
+    lyricsgenius = None
 
 class NowPlayingView(discord.ui.View):
     def __init__(self, cog, ctx):
@@ -337,6 +348,48 @@ class Music(commands.Cog):
         self.accumulated_time = {} # Accumulated play time before last pause per guild
         self.history = {}         # Played songs history per guild
         self.autoplay = {}        # Autoplay toggle state per guild
+        self.download_tasks = {}  # Active audio downloads by song URL
+        self.lyrics_cache = {}    # Cached LRCLIB results by song identity
+        self.cache_dir = Path("data") / "music_cache"
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self.prefetch_limit = 2
+        self.lyrics_headers = {"User-Agent": "KaelAbot-Discord-Bot/1.0.0 (https://github.com/AhmadF1kr1/Fiku-Bot)"}
+        self.genius_token = os.getenv("GENIUS_ACCESS_TOKEN") or os.getenv("GENIUS_TOKEN")
+        self.genius = None
+        if lyricsgenius and self.genius_token:
+            try:
+                self.genius = lyricsgenius.Genius(
+                    self.genius_token,
+                    timeout=8,
+                    retries=1,
+                    remove_section_headers=True,
+                    skip_non_songs=True
+                )
+            except Exception as e:
+                print(f"Genius lyrics provider disabled: {e}")
+        self.metadata_noise_re = re.compile(
+            r'\s*[\(\[][^)]*?(?:official|music|video|lyric|audio|hd|hq|version|edit|remix|ft\.|feat\.|mv|pv|short|anime|tv|size|full|lyrics)[^)]*?[\)\]]',
+            re.IGNORECASE
+        )
+        self.metadata_suffix_re = re.compile(
+            r'\s*-\s*(?:official|music|video|lyric|audio|hd|hq|version|edit|remix|ft\.|feat\.|mv|pv|short|anime|tv|size|full|lyrics).*$',
+            re.IGNORECASE
+        )
+        self.metadata_keyword_re = re.compile(
+            r'\b(?:official|music|video|lyric|lyrics|audio|hd|hq|version|edit|remix|mv|pv|short|anime|tv|size|full)\b',
+            re.IGNORECASE
+        )
+        self.uploader_noise_re = re.compile(r'\s*-\s*Topic|\s+Official\s*.*$', re.IGNORECASE)
+        self.whitespace_re = re.compile(r'\s+')
+        self.title_split_re = re.compile(r'\s*-\s*')
+        self.paren_re = re.compile(r'\(([^)]+)\)')
+        self.japanese_re = re.compile(r'[\u3040-\u30ff\u4e00-\u9fff]')
+        self.non_word_re = re.compile(r'[^\w\s]', re.UNICODE)
+        self.synced_timestamp_re = re.compile(r'\[\d{1,2}:\d{2}(?:\.\d{1,3})?\]')
+        self.genius_embed_suffix_re = re.compile(r'\d*Embed\s*$', re.IGNORECASE)
+        self.genius_lyrics_header_re = re.compile(r'^.*?Lyrics\s*', re.IGNORECASE)
+        self.max_lyrics_candidates = 18
+        self.lyrics_negative_cache_ttl = 300
         
         # YouTube DL options
         self.ydl_opts = {
@@ -350,6 +403,13 @@ class Music(commands.Cog):
             'default_search': 'auto',
             'source_address': '0.0.0.0',
             'cachedir': False
+        }
+
+        self.download_ydl_opts = {
+            **self.ydl_opts,
+            'default_search': None,
+            'noplaylist': True,
+            'outtmpl': str(self.cache_dir / '%(id)s.%(ext)s'),
         }
         
         # FFmpeg options
@@ -367,6 +427,9 @@ class Music(commands.Cog):
     async def cog_unload(self):
         if self._session and not self._session.closed:
             await self._session.close()
+        for task in self.download_tasks.values():
+            if not task.done():
+                task.cancel()
 
     def cleanup_guild(self, guild_id):
         """Cleans up all cached music state data for a guild to prevent memory leaks"""
@@ -379,6 +442,456 @@ class Music(commands.Cog):
         self.accumulated_time.pop(guild_id, None)
         self.history.pop(guild_id, None)
         self.autoplay.pop(guild_id, None)
+
+    def has_japanese(self, text):
+        return bool(text and self.japanese_re.search(text))
+
+    def clean_lyrics_query_text(self, text):
+        """Remove common YouTube metadata noise before querying LRCLIB."""
+        if not text:
+            return ""
+
+        text = self.metadata_noise_re.sub('', text)
+        text = self.metadata_suffix_re.sub('', text)
+        for open_bracket, close_bracket in (('【', '】'), ('「', '」'), ('『', '』'), ('（', '）'), ('［', '］')):
+            text = re.sub(f'{re.escape(open_bracket)}[^{re.escape(close_bracket)}]*{re.escape(close_bracket)}', '', text)
+        return text.strip()
+
+    def romanize_text(self, text, compact=False, preserve_lines=False):
+        if not text:
+            return ""
+
+        def convert_line(line):
+            converted = self.kks.convert(line)
+            romaji = " ".join(item['hepburn'] for item in converted)
+            romaji = self.whitespace_re.sub(' ', romaji).strip()
+            return self.whitespace_re.sub('', romaji) if compact else romaji
+
+        if preserve_lines:
+            return "\n".join(convert_line(line) if line.strip() else "" for line in text.splitlines()).strip()
+
+        return convert_line(text)
+
+    def unique_non_empty(self, values):
+        seen = set()
+        result = []
+        for value in values:
+            value = value.strip() if value else ""
+            key = value.lower()
+            if value and key not in seen:
+                seen.add(key)
+                result.append(value)
+        return result
+
+    def normalize_lyrics_match_text(self, text):
+        if not text:
+            return ""
+        text = self.clean_lyrics_query_text(text).lower()
+        text = self.non_word_re.sub(' ', text)
+        return self.whitespace_re.sub(' ', text).strip()
+
+    def text_similarity(self, left, right):
+        left = self.normalize_lyrics_match_text(left)
+        right = self.normalize_lyrics_match_text(right)
+        if not left or not right:
+            return 0.0
+        if left == right:
+            return 1.0
+
+        left_tokens = set(left.split())
+        right_tokens = set(right.split())
+        token_score = len(left_tokens & right_tokens) / max(len(left_tokens | right_tokens), 1)
+        sequence_score = SequenceMatcher(None, left, right).ratio()
+        return max(token_score, sequence_score)
+
+    def synced_lyrics_to_plain(self, synced_lyrics):
+        if not synced_lyrics:
+            return ""
+
+        lines = []
+        for line in synced_lyrics.splitlines():
+            line = self.synced_timestamp_re.sub('', line).strip()
+            if line:
+                lines.append(line)
+        return "\n".join(lines).strip()
+
+    def get_lyrics_text(self, song_data):
+        if not isinstance(song_data, dict):
+            return ""
+        return (song_data.get('plainLyrics') or self.synced_lyrics_to_plain(song_data.get('syncedLyrics'))).strip()
+
+    def clean_genius_lyrics(self, lyrics):
+        if not lyrics:
+            return ""
+
+        lyrics = lyrics.replace('\r\n', '\n').replace('\r', '\n').strip()
+        lyrics = self.genius_embed_suffix_re.sub('', lyrics).strip()
+
+        lines = lyrics.splitlines()
+        if lines and lines[0].lower().endswith("lyrics"):
+            lines = lines[1:]
+        lyrics = "\n".join(lines).strip()
+
+        lyrics = lyrics.replace("You might also like", "").strip()
+        return lyrics
+
+    def score_lyrics_result(self, item, candidate, song):
+        if not isinstance(item, dict) or not self.get_lyrics_text(item):
+            return 0.0
+
+        song_title = song.get('title', '')
+        song_uploader = song.get('uploader', '')
+        song_duration = song.get('duration') or 0
+        item_title = item.get('trackName') or item.get('name') or ''
+        item_artist = item.get('artistName') or ''
+
+        score = 0.0
+        if candidate["type"] == "get":
+            score += self.text_similarity(candidate.get('track', ''), item_title) * 0.45
+            score += self.text_similarity(candidate.get('artist', ''), item_artist) * 0.35
+        else:
+            score += self.text_similarity(candidate.get('q', ''), f"{item_title} {item_artist}") * 0.35
+
+        score += self.text_similarity(song_title, item_title) * 0.35
+        score += self.text_similarity(song_uploader, item_artist) * 0.15
+
+        item_duration = item.get('duration') or 0
+        if song_duration and item_duration:
+            diff = abs(float(song_duration) - float(item_duration))
+            if diff <= 2:
+                score += 0.25
+            elif diff <= 8:
+                score += 0.15
+            elif diff <= 20:
+                score += 0.05
+
+        if item.get('plainLyrics'):
+            score += 0.05
+
+        return score
+
+    def choose_best_lyrics_result(self, items, candidate, song):
+        if not isinstance(items, list):
+            return None
+
+        scored = [
+            (self.score_lyrics_result(item, candidate, song), item)
+            for item in items
+            if isinstance(item, dict) and self.get_lyrics_text(item)
+        ]
+        if not scored:
+            return None
+
+        scored.sort(key=lambda pair: pair[0], reverse=True)
+        best_score, best_item = scored[0]
+        return best_item if best_score >= 0.45 else None
+
+    def build_genius_candidates(self, song):
+        candidates = []
+        seen = set()
+
+        def add(title, artist=None):
+            title = title.strip() if title else ""
+            artist = artist.strip() if artist else None
+            key = (title.lower(), artist.lower() if artist else "")
+            if title and key not in seen:
+                seen.add(key)
+                candidates.append((title, artist))
+
+        song_title = song.get('title', '')
+        clean_title = self.clean_lyrics_query_text(song_title) or song_title
+        uploader = song.get('uploader', '')
+        clean_uploader = self.clean_lyrics_query_text(self.uploader_noise_re.sub('', uploader).strip())
+        if clean_uploader == "Unknown":
+            clean_uploader = ""
+
+        title_parts = [part.strip() for part in self.title_split_re.split(clean_title, maxsplit=1)]
+        if len(title_parts) == 2:
+            possible_artist, possible_title = title_parts
+            add(possible_title, possible_artist)
+            add(possible_title, clean_uploader)
+            add(f"{possible_title} {possible_artist}")
+
+        add(clean_title, clean_uploader)
+        add(clean_title)
+        add(song_title, clean_uploader)
+        add(song_title)
+
+        for match in self.paren_re.findall(song_title):
+            if not self.metadata_keyword_re.search(match):
+                add(match, clean_uploader)
+                add(match)
+
+        return candidates[:8]
+
+    def score_genius_result(self, genius_song, title_query, artist_query, song):
+        result_title = getattr(genius_song, 'title', '') or ''
+        result_artist = getattr(genius_song, 'artist', '') or ''
+        score = self.text_similarity(title_query, result_title) * 0.55
+        score += self.text_similarity(song.get('title', ''), result_title) * 0.25
+        if artist_query:
+            score += self.text_similarity(artist_query, result_artist) * 0.25
+        else:
+            score += self.text_similarity(song.get('uploader', ''), result_artist) * 0.15
+        return score
+
+    async def find_genius_lyrics(self, song):
+        if not self.genius:
+            return None
+
+        loop = asyncio.get_running_loop()
+
+        for title_query, artist_query in self.build_genius_candidates(song):
+            try:
+                def search():
+                    return self.genius.search_song(title_query, artist=artist_query)
+
+                genius_song = await loop.run_in_executor(None, search)
+                if not genius_song:
+                    continue
+
+                lyrics_text = self.clean_genius_lyrics(getattr(genius_song, 'lyrics', ''))
+                if not lyrics_text:
+                    continue
+
+                if self.score_genius_result(genius_song, title_query, artist_query, song) < 0.35:
+                    continue
+
+                return {
+                    'trackName': getattr(genius_song, 'title', title_query),
+                    'artistName': getattr(genius_song, 'artist', artist_query or 'Unknown Artist'),
+                    'plainLyrics': lyrics_text,
+                    'provider': 'Genius',
+                    'url': getattr(genius_song, 'url', '')
+                }
+            except Exception:
+                continue
+
+        return None
+
+    def build_lyrics_candidates(self, song):
+        song_title = song.get('title', 'Unknown Title')
+        clean_title = self.clean_lyrics_query_text(song_title) or song_title
+        uploader = song.get('uploader', 'Unknown')
+        clean_uploader = self.clean_lyrics_query_text(self.uploader_noise_re.sub('', uploader).strip())
+        if clean_uploader == "Unknown":
+            clean_uploader = ""
+
+        titles_to_try = [clean_title, song_title]
+        artists_to_try = [clean_uploader] if clean_uploader else []
+
+        if self.has_japanese(clean_title):
+            try:
+                titles_to_try.extend([self.romanize_text(clean_title), self.romanize_text(clean_title, compact=True)])
+            except Exception as e:
+                print(f"Romaji title conversion error: {e}")
+
+        if self.has_japanese(clean_uploader):
+            try:
+                artists_to_try.append(self.romanize_text(clean_uploader))
+            except Exception as e:
+                print(f"Romaji uploader conversion error: {e}")
+
+        for match in self.paren_re.findall(song_title):
+            if self.metadata_keyword_re.search(match):
+                continue
+            titles_to_try.append(match)
+            if self.has_japanese(match):
+                try:
+                    titles_to_try.extend([self.romanize_text(match), self.romanize_text(match, compact=True)])
+                except Exception as e:
+                    print(f"Romaji title conversion error: {e}")
+
+        title_parts = [part.strip() for part in self.title_split_re.split(clean_title, maxsplit=1)]
+        if len(title_parts) == 2:
+            possible_artist, possible_title = title_parts
+            artists_to_try = [possible_artist, *artists_to_try, possible_title]
+            titles_to_try = [possible_title, clean_title, song_title, possible_artist, *titles_to_try]
+
+        titles_to_try = self.unique_non_empty(titles_to_try)
+        artists_to_try = self.unique_non_empty(artists_to_try)
+
+        candidates = []
+        seen = set()
+
+        def add_candidate(candidate):
+            if candidate["type"] == "get":
+                key = f"get:{candidate['artist'].lower()}:{candidate['track'].lower()}"
+            else:
+                key = f"search:{candidate['q'].lower()}"
+            if key not in seen and len(candidates) < self.max_lyrics_candidates:
+                seen.add(key)
+                candidates.append(candidate)
+
+        for track in titles_to_try[:3]:
+            add_candidate({"type": "search", "q": track})
+
+        if len(title_parts) == 2:
+            first, second = title_parts
+            if first.lower() != second.lower():
+                add_candidate({"type": "get", "artist": first, "track": second})
+                add_candidate({"type": "get", "artist": second, "track": first})
+                add_candidate({"type": "search", "q": f"{first} {second}"})
+                add_candidate({"type": "search", "q": f"{second} {first}"})
+
+        for artist in artists_to_try[:3]:
+            for track in titles_to_try[:4]:
+                if track.lower() != artist.lower():
+                    add_candidate({"type": "get", "artist": artist, "track": track})
+
+        for artist in artists_to_try[:2]:
+            for track in titles_to_try[:4]:
+                if track.lower() != artist.lower():
+                    add_candidate({"type": "search", "q": f"{track} {artist}"})
+
+        for track in titles_to_try[:5]:
+            add_candidate({"type": "search", "q": track})
+
+        return candidates
+
+    async def fetch_lyrics_candidate(self, candidate, song):
+        if candidate["type"] == "get":
+            url = (
+                "https://lrclib.net/api/get?"
+                f"artist_name={urllib.parse.quote(candidate['artist'])}&"
+                f"track_name={urllib.parse.quote(candidate['track'])}"
+            )
+        else:
+            url = f"https://lrclib.net/api/search?q={urllib.parse.quote(candidate['q'])}"
+
+        async with self.session.get(url, headers=self.lyrics_headers, timeout=4) as response:
+            if response.status != 200:
+                return None
+
+            try:
+                data = await response.json(content_type=None)
+            except Exception:
+                return None
+
+            if candidate["type"] == "get":
+                return data if isinstance(data, dict) and self.get_lyrics_text(data) else None
+
+            if not isinstance(data, list) or not data:
+                return None
+            return self.choose_best_lyrics_result(data, candidate, song)
+
+    async def find_lyrics(self, song):
+        cache_key = song.get('url') or f"{song.get('title', '')}:{song.get('uploader', '')}"
+        if cache_key in self.lyrics_cache:
+            cached = self.lyrics_cache[cache_key]
+            if cached is not None:
+                return cached
+            miss_time = song.get('lyrics_miss_time')
+            if miss_time and time.time() - miss_time < self.lyrics_negative_cache_ttl:
+                return None
+            self.lyrics_cache.pop(cache_key, None)
+
+        genius_data = await self.find_genius_lyrics(song)
+        if genius_data and self.get_lyrics_text(genius_data):
+            self.lyrics_cache[cache_key] = genius_data
+            if len(self.lyrics_cache) > 100:
+                self.lyrics_cache.pop(next(iter(self.lyrics_cache)))
+            return genius_data
+
+        for candidate in self.build_lyrics_candidates(song):
+            try:
+                song_data = await self.fetch_lyrics_candidate(candidate, song)
+                if song_data and self.get_lyrics_text(song_data):
+                    song_data['provider'] = 'LRCLIB'
+                    self.lyrics_cache[cache_key] = song_data
+                    if len(self.lyrics_cache) > 100:
+                        self.lyrics_cache.pop(next(iter(self.lyrics_cache)))
+                    return song_data
+            except (aiohttp.ClientError, asyncio.TimeoutError):
+                continue
+            except Exception:
+                continue
+
+        song['lyrics_miss_time'] = time.time()
+        self.lyrics_cache[cache_key] = None
+        return None
+
+    def get_cached_audio_path(self, song):
+        """Return an existing cached file for a song if one is available."""
+        file_path = song.get('file_path')
+        if file_path and Path(file_path).exists():
+            return file_path
+
+        song_id = song.get('id')
+        if song_id:
+            matches = list(self.cache_dir.glob(f"{song_id}.*"))
+            if matches:
+                path = str(matches[0])
+                song['file_path'] = path
+                return path
+
+        return None
+
+    async def ensure_song_downloaded(self, song):
+        """Download a song completely before it is played."""
+        cached_path = self.get_cached_audio_path(song)
+        if cached_path:
+            return cached_path
+
+        song_url = song.get('url') or song.get('source')
+        if not song_url:
+            return None
+
+        existing_task = self.download_tasks.get(song_url)
+        if existing_task:
+            return await existing_task
+
+        loop = asyncio.get_running_loop()
+
+        def download():
+            with yt_dlp.YoutubeDL(self.download_ydl_opts) as ydl:
+                info = ydl.extract_info(song_url, download=True)
+                if 'entries' in info:
+                    info = next((entry for entry in info['entries'] if entry), None)
+                if not info:
+                    return None
+
+                filename = ydl.prepare_filename(info)
+                path = Path(filename)
+                if not path.exists():
+                    matches = list(self.cache_dir.glob(f"{info.get('id')}.*"))
+                    path = matches[0] if matches else path
+
+                song['id'] = info.get('id', song.get('id'))
+                song['file_path'] = str(path)
+                return str(path)
+
+        task = asyncio.ensure_future(loop.run_in_executor(None, download))
+        self.download_tasks[song_url] = task
+        try:
+            return await task
+        finally:
+            self.download_tasks.pop(song_url, None)
+
+    def prefetch_queue(self, guild_id):
+        """Start downloading the next few queued songs without blocking playback."""
+        queue = self.queue.get(guild_id)
+        if not queue:
+            return
+
+        for song in list(queue)[:self.prefetch_limit]:
+            if self.get_cached_audio_path(song):
+                continue
+
+            song_url = song.get('url') or song.get('source')
+            if not song_url or song_url in self.download_tasks:
+                continue
+
+            task = asyncio.create_task(self.ensure_song_downloaded(song))
+
+            def log_prefetch_error(done_task):
+                if done_task.cancelled():
+                    return
+                error = done_task.exception()
+                if error:
+                    print(f"Prefetch error: {error}")
+
+            task.add_done_callback(log_prefetch_error)
     
     async def ensure_voice(self, ctx):
         """Ensure bot is connected to voice"""
@@ -414,6 +927,7 @@ class Music(commands.Cog):
                     return None
             
             song = {
+                'id': info.get('id', ''),
                 'title': info.get('title', 'Unknown Title'),
                 'url': info.get('webpage_url', ''),
                 'duration': info.get('duration', 0),
@@ -455,6 +969,7 @@ class Music(commands.Cog):
                 if not entry:
                     continue
                 songs.append({
+                    'id': entry.get('id', ''),
                     'title': entry.get('title', 'Unknown Title'),
                     'url': entry.get('webpage_url', ''),
                     'duration': entry.get('duration', 0),
@@ -480,7 +995,7 @@ class Music(commands.Cog):
         
         # Determine next song source
         if self.loop_mode.get(guild_id) == 'song' and old_song:
-            source = old_song.get('source')
+            song = old_song
         elif self.queue.get(guild_id) and len(self.queue[guild_id]) > 0:
             if old_song:
                 self.history.setdefault(guild_id, []).append(old_song)
@@ -491,8 +1006,6 @@ class Music(commands.Cog):
             
             if self.loop_mode.get(guild_id) == 'queue':
                 self.queue[guild_id].append(song)
-            
-            source = song.get('source')
         elif self.autoplay.get(guild_id, False) and old_song:
             if old_song:
                 self.history.setdefault(guild_id, []).append(old_song)
@@ -514,19 +1027,19 @@ class Music(commands.Cog):
                 
             if autoplay_song:
                 self.now_playing[guild_id] = autoplay_song
-                source = autoplay_song.get('source')
+                song = autoplay_song
             else:
                 self.now_playing.pop(guild_id, None)
-                source = None
+                song = None
         else:
             if old_song:
                 self.history.setdefault(guild_id, []).append(old_song)
                 if len(self.history[guild_id]) > 20:
                     self.history[guild_id].pop(0)
             self.now_playing.pop(guild_id, None)
-            source = None
+            song = None
         
-        if not source:
+        if not song:
             embed = discord.Embed(
                 title="📭 Queue Empty",
                 description="No more songs in queue. Leaving voice channel in 60 seconds.",
@@ -540,11 +1053,20 @@ class Music(commands.Cog):
                 self.cleanup_guild(guild_id)
             return
         
-        if source and ctx.voice_client:
+        if song and ctx.voice_client:
+            status_msg = None
             try:
+                status_msg = await ctx.send("📥 **Sedang mengunduh lagu, tunggu sebentar...**")
+                source = await self.ensure_song_downloaded(song)
+                if not source:
+                    await status_msg.edit(content=f"❌ Gagal mengunduh **{song['title']}**, melewati lagu ini...")
+                    await asyncio.sleep(2)
+                    await self.play_next(ctx)
+                    return
+                
                 audio_source = discord.FFmpegPCMAudio(
                     source,
-                    **self.ffmpeg_opts
+                    options='-vn'
                 )
 
                 print(vars(audio_source))
@@ -575,10 +1097,22 @@ class Music(commands.Cog):
                 embed = self.get_now_playing_embed(guild_id)
                 view = NowPlayingView(self, ctx)
                 await ctx.send(embed=embed, view=view)
+                self.prefetch_queue(guild_id)
+                
+                try:
+                    await status_msg.delete()
+                except:
+                    pass
                 
             except Exception as e:
                 print(f"Playback error: {e}")
-                await ctx.send(f"❌ Error playing song: {e}")
+                if status_msg:
+                    try:
+                        await status_msg.edit(content=f"❌ Error playing song: {e}")
+                    except:
+                        await ctx.send(f"❌ Error playing song: {e}")
+                else:
+                    await ctx.send(f"❌ Error playing song: {e}")
                 await self.play_next(ctx)
     def get_now_playing_embed(self, guild_id):
         if guild_id not in self.now_playing:
@@ -716,6 +1250,7 @@ class Music(commands.Cog):
         if not ctx.voice_client.is_playing() and not ctx.voice_client.is_paused():
             await self.play_next(ctx)
         else:
+            self.prefetch_queue(guild_id)
             embed = discord.Embed(
                 title="✅ Added to Queue",
                 description=f"**[{song['title']}]({song['url']})**",
@@ -756,6 +1291,7 @@ class Music(commands.Cog):
         if not ctx.voice_client.is_playing() and not ctx.voice_client.is_paused():
             await self.play_next(ctx)
         else:
+            self.prefetch_queue(guild_id)
             embed = discord.Embed(
                 title="✅ Added to Queue",
                 description=f"**[{song['title']}]({song['url']})**",
@@ -975,126 +1511,41 @@ class Music(commands.Cog):
             if guild_id not in self.now_playing:
                 return await ctx.send("❌ Nothing is currently playing!")
                 
-            song_title = self.now_playing[guild_id]['title']
-            
-            # Clean title to get better search results
-            import re
-            clean_title = song_title
-            clean_title = re.sub(r'\s*[\(\[][^)]*?(?:official|music|video|lyric|audio|hd|hq|version|edit|remix|ft\.|feat\.)[^)]*?[\)\]]', '', clean_title, flags=re.IGNORECASE)
-            clean_title = re.sub(r'\s*-\s*(?:official|music|video|lyric|audio|hd|hq|version|edit|remix|ft\.|feat\.).*$', '', clean_title, flags=re.IGNORECASE)
-            
-            # Remove Japanese/Chinese brackets and their contents
-            clean_title = re.sub(r'【[^】]*】', '', clean_title)
-            clean_title = re.sub(r'「[^」]*」', '', clean_title)
-            clean_title = re.sub(r'『[^』]*』', '', clean_title)
-            clean_title = re.sub(r'（[^）]*）', '', clean_title)
-            clean_title = re.sub(r'［[^］]*］', '', clean_title)
-            clean_title = clean_title.strip()
-            
-            # If cleaning results in empty string, fallback to original title
-            if not clean_title:
-                clean_title = song_title
-                
-            uploader = self.now_playing[guild_id].get('uploader', 'Unknown')
-            
-            # Build candidates
-            candidates = []
-            
-            # 1. Try splitting the cleaned title by '-'
-            parts = [p.strip() for p in re.split(r'\s*-\s*', clean_title)]
-            if len(parts) >= 2:
-                track, artist = parts[0], parts[1]
-                candidates.append({"type": "get", "artist": artist, "track": track})
-                candidates.append({"type": "get", "artist": track, "track": artist})
-                candidates.append({"type": "search", "q": f"{track} {artist}"})
-                candidates.append({"type": "search", "q": track})
-                
-            # 2. Try using clean uploader name and clean title
-            clean_uploader = re.sub(r'\s*-\s*Topic|\s+Official\s*.*$', '', uploader, flags=re.IGNORECASE).strip()
-            if clean_uploader and clean_uploader != "Unknown":
-                candidates.append({"type": "get", "artist": clean_uploader, "track": clean_title})
-                candidates.append({"type": "search", "q": f"{clean_title} {clean_uploader}"})
-                
-            # 3. Text search fallbacks
-            candidates.append({"type": "search", "q": clean_title})
-            candidates.append({"type": "search", "q": song_title})
-            
-            import urllib.parse
-            headers = {"User-Agent": "KaelAbot-Discord-Bot/1.0.0 (https://github.com/AhmadF1kr1/Fiku-Bot)"}
-            song_data = None
-            
-            for cand in candidates:
-                try:
-                    if cand["type"] == "get":
-                        url = f"https://lrclib.net/api/get?artist_name={urllib.parse.quote(cand['artist'])}&track_name={urllib.parse.quote(cand['track'])}"
-                    else:
-                        url = f"https://lrclib.net/api/search?q={urllib.parse.quote(cand['q'])}"
-                        
-                    async with self.session.get(url, headers=headers, timeout=5) as response:
-                        if response.status == 200:
-                            res_data = await response.json()
-                            if cand["type"] == "get":
-                                if res_data and res_data.get('plainLyrics'):
-                                    song_data = res_data
-                                    break
-                            else:
-                                if res_data:
-                                    for item in res_data:
-                                        if item.get('plainLyrics'):
-                                            song_data = item
-                                            break
-                                    if not song_data and len(res_data) > 0:
-                                        song_data = res_data[0]
-                                    if song_data:
-                                        break
-                except Exception as e:
-                    print(f"Lyrics candidate fetch error: {e}")
+            song = self.now_playing[guild_id]
+            song_title = song['title']
+            song_data = await self.find_lyrics(song)
                     
             if not song_data:
                 return await ctx.send(f"❌ Could not find lyrics for **{song_title}**.")
                 
-            lyrics_text = song_data.get('plainLyrics')
+            lyrics_text = self.get_lyrics_text(song_data)
             if not lyrics_text:
                 return await ctx.send(f"❌ Could not find lyrics for **{song_title}**.")
             is_romanized = False
             
-            # Auto-detect if lyrics contain Japanese characters to romanize
-            has_japanese = any(
-                0x3040 <= ord(char) <= 0x309F or  # Hiragana
-                0x30A0 <= ord(char) <= 0x30FF or  # Katakana
-                0x4E00 <= ord(char) <= 0x9FFF     # Kanji
-                for char in lyrics_text
-            )
-            
-            if has_japanese:
+            if self.has_japanese(lyrics_text):
                 try:
-                    lines = []
-                    for line in lyrics_text.splitlines():
-                        if not line.strip():
-                            lines.append("")
-                            continue
-                        converted = self.kks.convert(line)
-                        line_romaji = " ".join(item['hepburn'] for item in converted)
-                        lines.append(line_romaji)
-                    lyrics_text = "\n".join(lines).strip()
+                    lyrics_text = self.romanize_text(lyrics_text, preserve_lines=True)
                     is_romanized = True
                 except Exception as e:
                     print(f"Failed to romanize lyrics via pykakasi: {e}")
     
             # Prepare embed
             title = song_data.get('trackName', song_title)
-            artist = song_data.get('artistName', 'Unknown Artist')
+            artist = song_data.get('artistName', 'Unknown Artist')[:300]
             
-            # Handle length limits
-            if len(lyrics_text) > 4000:
-                lyrics_text = lyrics_text[:3990] + "\n\n... (truncated)"
+            description_prefix = f"**Artist:** {artist}\n\n"
+            max_lyrics_length = 4096 - len(description_prefix)
+            if len(lyrics_text) > max_lyrics_length:
+                lyrics_text = lyrics_text[:max_lyrics_length - 18].rstrip() + "\n\n... (truncated)"
                 
             embed = discord.Embed(
-                title=f"🎶 Lyrics for: {title}" + (" (Romaji/Romanized)" if is_romanized else ""),
-                description=f"**Artist:** {artist}\n\n{lyrics_text}",
+                title=(f"🎶 Lyrics for: {title}" + (" (Romaji/Romanized)" if is_romanized else ""))[:256],
+                description=f"{description_prefix}{lyrics_text}",
                 color=discord.Color.blue()
             )
-            embed.set_footer(text="Lyrics provided by LRCLIB" + (" | Romanized via pykakasi" if is_romanized else ""))
+            provider = song_data.get('provider', 'Lyrics provider')
+            embed.set_footer(text=f"Lyrics provided by {provider}" + (" | Romanized via pykakasi" if is_romanized else ""))
             return await ctx.send(embed=embed)
             
         except Exception as e:
