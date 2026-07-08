@@ -20,3 +20,4 @@ requests==2.34.2
 urllib3==2.7.0
 yarl==1.24.2
 yt-dlp==2026.6.9
+pykakasi

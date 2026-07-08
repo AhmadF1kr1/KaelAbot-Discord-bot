@@ -10,6 +10,8 @@ import yt_dlp
 import asyncio
 from collections import deque
 import random
+import aiohttp
+import pykakasi
 
 class NowPlayingView(discord.ui.View):
     def __init__(self, cog, ctx):
@@ -145,6 +147,12 @@ class NowPlayingView(discord.ui.View):
             )
             return await interaction.response.send_message(embed=embed, ephemeral=True)
         
+        queue_len = len(self.cog.queue[guild_id])
+        if queue_len > 10:
+            view = QueueView(self.cog, guild_id, interaction.user.id)
+            embed = view.get_page_embed()
+            return await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+            
         queue_list = ""
         total_duration = 0
         for i, song in enumerate(self.cog.queue[guild_id], 1):
@@ -153,11 +161,6 @@ class NowPlayingView(discord.ui.View):
             mins = duration // 60
             secs = duration % 60
             queue_list += f"`{i}.` **{song['title'][:50]}** `[{mins}:{secs:02d}]`\n"
-            if i >= 10:
-                remaining = len(self.cog.queue[guild_id]) - 10
-                if remaining > 0:
-                    queue_list += f"\n*...and {remaining} more songs*"
-                break
         
         embed = discord.Embed(
             title="📋 Music Queue",
@@ -171,7 +174,7 @@ class NowPlayingView(discord.ui.View):
         
         embed.add_field(
             name="Statistics",
-            value=f"📊 Total Songs: **{len(self.cog.queue[guild_id])}**\n"
+            value=f"📊 Total Songs: **{queue_len}**\n"
                   f"⏱️ Total Duration: **{total_mins}:{total_secs:02d}**\n"
                   f"🔁 Loop Mode: {loop_emoji.get(loop_mode, '❌')} **{loop_mode}**",
             inline=False
@@ -222,9 +225,107 @@ class NowPlayingView(discord.ui.View):
         await interaction.response.send_message(f"🔊 Volume increased to **{int(new_vol * 100)}%**", ephemeral=True)
 
 
+class QueueView(discord.ui.View):
+    def __init__(self, cog, guild_id, user_id):
+        super().__init__(timeout=60.0)
+        self.cog = cog
+        self.guild_id = guild_id
+        self.user_id = user_id
+        self.current_page = 0
+        self.per_page = 10
+        self.update_buttons()
+
+    def update_buttons(self):
+        queue = self.cog.queue.get(self.guild_id, [])
+        total_pages = (len(queue) - 1) // self.per_page + 1
+        
+        self.prev_page.disabled = self.current_page == 0
+        self.next_page.disabled = self.current_page >= total_pages - 1
+        
+        self.prev_page.label = f"Page {self.current_page}" if self.current_page > 0 else "Prev"
+        self.next_page.label = f"Page {self.current_page + 2}" if self.current_page < total_pages - 1 else "Next"
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("❌ This menu is not for you!", ephemeral=True)
+            return False
+        return True
+
+    def get_page_embed(self):
+        queue = self.cog.queue.get(self.guild_id, [])
+        total_songs = len(queue)
+        
+        if total_songs == 0:
+            return discord.Embed(
+                title="📋 Music Queue",
+                description="Queue is empty! Use `/play` to add songs.",
+                color=discord.Color.blue()
+            )
+            
+        start_idx = self.current_page * self.per_page
+        end_idx = start_idx + self.per_page
+        page_songs = list(queue)[start_idx:end_idx]
+        
+        queue_list = ""
+        for i, song in enumerate(page_songs, start_idx + 1):
+            duration = song['duration']
+            mins = duration // 60
+            secs = duration % 60
+            queue_list += f"`{i}.` **{song['title'][:50]}** `[{mins}:{secs:02d}]`\n"
+
+        total_duration = sum(song['duration'] for song in queue)
+        total_mins = total_duration // 60
+        total_secs = total_duration % 60
+        
+        loop_mode = self.cog.loop_mode.get(self.guild_id, 'off')
+        loop_emoji = {'off': '❌', 'song': '🔂', 'queue': '🔁'}
+        
+        total_pages = (total_songs - 1) // self.per_page + 1
+        
+        embed = discord.Embed(
+            title="📋 Music Queue",
+            description=queue_list,
+            color=discord.Color.blue()
+        )
+        embed.add_field(
+            name="Statistics",
+            value=f"📊 Total Songs: **{total_songs}**\n"
+                  f"⏱️ Total Duration: **{total_mins}:{total_secs:02d}**\n"
+                  f"🔁 Loop Mode: {loop_emoji.get(loop_mode, '❌')} **{loop_mode}**",
+            inline=False
+        )
+        
+        if self.guild_id in self.cog.now_playing:
+            current = self.cog.now_playing[self.guild_id]
+            embed.add_field(
+                name="🎵 Now Playing",
+                value=f"**{current['title'][:50]}**",
+                inline=False
+            )
+            
+        embed.set_footer(text=f"Page {self.current_page + 1} of {total_pages}")
+        return embed
+
+    @discord.ui.button(label="Prev", style=discord.ButtonStyle.blurple, emoji="◀️")
+    async def prev_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.current_page -= 1
+        self.update_buttons()
+        embed = self.get_page_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="Next", style=discord.ButtonStyle.blurple, emoji="▶️")
+    async def next_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.current_page += 1
+        self.update_buttons()
+        embed = self.get_page_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
+
+
 class Music(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        self._session = None
+        self.kks = pykakasi.kakasi()
         
         # Music state storage
         self.queue = {}           # Song queues per guild
@@ -256,6 +357,28 @@ class Music(commands.Cog):
             'before_options': '-reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 5',
             'options': '-vn'
         }
+
+    @property
+    def session(self):
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession()
+        return self._session
+
+    async def cog_unload(self):
+        if self._session and not self._session.closed:
+            await self._session.close()
+
+    def cleanup_guild(self, guild_id):
+        """Cleans up all cached music state data for a guild to prevent memory leaks"""
+        self.queue.pop(guild_id, None)
+        self.now_playing.pop(guild_id, None)
+        self.loop_mode.pop(guild_id, None)
+        self.volume_level.pop(guild_id, None)
+        self.search_results.pop(guild_id, None)
+        self.start_time.pop(guild_id, None)
+        self.accumulated_time.pop(guild_id, None)
+        self.history.pop(guild_id, None)
+        self.autoplay.pop(guild_id, None)
     
     async def ensure_voice(self, ctx):
         """Ensure bot is connected to voice"""
@@ -273,32 +396,37 @@ class Music(commands.Cog):
     async def search_song(self, query):
         """Search for a song on YouTube"""
         try:
-            with yt_dlp.YoutubeDL(self.ydl_opts) as ydl:
-                if not query.startswith('http'):
-                    query = f"ytsearch:{query}"
+            loop = asyncio.get_running_loop()
+            def extract():
+                with yt_dlp.YoutubeDL(self.ydl_opts) as ydl:
+                    q = query if query.startswith('http') else f"ytsearch:{query}"
+                    return ydl.extract_info(q, download=False)
+            
+            info = await loop.run_in_executor(None, extract)
+            
+            if not info:
+                return None
                 
-                info = ydl.extract_info(query, download=False)
-                
-                if 'entries' in info:
-                    if len(info['entries']) > 0:
-                        info = info['entries'][0]
-                    else:
-                        return None
-                
-                song = {
-                    'title': info.get('title', 'Unknown Title'),
-                    'url': info.get('webpage_url', ''),
-                    'duration': info.get('duration', 0),
-                    'source': info.get('url', ''),
-                    'thumbnail': info.get('thumbnail', ''),
-                    'uploader': info.get('uploader', 'Unknown'),
-                    'views': info.get('view_count', 0)
-                }
+            if 'entries' in info:
+                if len(info['entries']) > 0:
+                    info = info['entries'][0]
+                else:
+                    return None
+            
+            song = {
+                'title': info.get('title', 'Unknown Title'),
+                'url': info.get('webpage_url', ''),
+                'duration': info.get('duration', 0),
+                'source': info.get('url', ''),
+                'thumbnail': info.get('thumbnail', ''),
+                'uploader': info.get('uploader', 'Unknown'),
+                'views': info.get('view_count', 0)
+            }
 
-                print(song)
-                
-                return song
-                
+            print(song)
+            
+            return song
+            
         except Exception as e:
             print(f"Search error: {e}")
             return None
@@ -306,34 +434,39 @@ class Music(commands.Cog):
     async def search_multiple_songs(self, query, limit=5):
         """Search for up to limit songs on YouTube"""
         try:
-            with yt_dlp.YoutubeDL(self.ydl_opts) as ydl:
-                if not query.startswith('http'):
-                    query = f"ytsearch{limit}:{query}"
+            loop = asyncio.get_running_loop()
+            def extract():
+                with yt_dlp.YoutubeDL(self.ydl_opts) as ydl:
+                    q = query if query.startswith('http') else f"ytsearch{limit}:{query}"
+                    return ydl.extract_info(q, download=False)
+            
+            info = await loop.run_in_executor(None, extract)
+            
+            if not info:
+                return []
                 
-                info = ydl.extract_info(query, download=False)
-                
-                songs = []
-                if 'entries' in info:
-                    entries = info['entries']
-                else:
-                    entries = [info]
-                
-                for entry in entries:
-                    if not entry:
-                        continue
-                    songs.append({
-                        'title': entry.get('title', 'Unknown Title'),
-                        'url': entry.get('webpage_url', ''),
-                        'duration': entry.get('duration', 0),
-                        'source': entry.get('url', ''),
-                        'thumbnail': entry.get('thumbnail', ''),
-                        'uploader': entry.get('uploader', 'Unknown'),
-                        'views': entry.get('view_count', 0)
-                    })
-                    if len(songs) >= limit:
-                        break
-                
-                return songs
+            songs = []
+            if 'entries' in info:
+                entries = info['entries']
+            else:
+                entries = [info]
+            
+            for entry in entries:
+                if not entry:
+                    continue
+                songs.append({
+                    'title': entry.get('title', 'Unknown Title'),
+                    'url': entry.get('webpage_url', ''),
+                    'duration': entry.get('duration', 0),
+                    'source': entry.get('url', ''),
+                    'thumbnail': entry.get('thumbnail', ''),
+                    'uploader': entry.get('uploader', 'Unknown'),
+                    'views': entry.get('view_count', 0)
+                })
+                if len(songs) >= limit:
+                    break
+            
+            return songs
         except Exception as e:
             print(f"Multiple search error: {e}")
             return []
@@ -404,6 +537,7 @@ class Music(commands.Cog):
             await asyncio.sleep(60)
             if ctx.voice_client and not ctx.voice_client.is_playing():
                 await ctx.voice_client.disconnect()
+                self.cleanup_guild(guild_id)
             return
         
         if source and ctx.voice_client:
@@ -675,13 +809,8 @@ class Music(commands.Cog):
         guild_id = ctx.guild.id
         
         if ctx.voice_client:
-            if guild_id in self.queue:
-                self.queue[guild_id].clear()
-                self.loop_mode[guild_id] = 'off'
-            self.start_time.pop(guild_id, None)
-            self.accumulated_time.pop(guild_id, None)
-            
             await ctx.voice_client.disconnect()
+            self.cleanup_guild(guild_id)
             await ctx.send("🛑 **Stopped and disconnected!**")
         else:
             await ctx.send("❌ I'm not in a voice channel!")
@@ -726,6 +855,12 @@ class Music(commands.Cog):
             )
             return await ctx.send(embed=embed)
         
+        queue_len = len(self.queue[guild_id])
+        if queue_len > 10:
+            view = QueueView(self, guild_id, ctx.author.id)
+            embed = view.get_page_embed()
+            return await ctx.send(embed=embed, view=view)
+            
         queue_list = ""
         total_duration = 0
         
@@ -737,12 +872,6 @@ class Music(commands.Cog):
             secs = duration % 60
             
             queue_list += f"`{i}.` **{song['title'][:50]}** `[{mins}:{secs:02d}]`\n"
-            
-            if i >= 10:
-                remaining = len(self.queue[guild_id]) - 10
-                if remaining > 0:
-                    queue_list += f"\n*...and {remaining} more songs*"
-                break
         
         embed = discord.Embed(
             title="📋 Music Queue",
@@ -758,7 +887,7 @@ class Music(commands.Cog):
         
         embed.add_field(
             name="Statistics",
-            value=f"📊 Total Songs: **{len(self.queue[guild_id])}**\n"
+            value=f"📊 Total Songs: **{queue_len}**\n"
                   f"⏱️ Total Duration: **{total_mins}:{total_secs:02d}**\n"
                   f"🔁 Loop Mode: {loop_emoji.get(loop_mode, '❌')} **{loop_mode}**",
             inline=False
@@ -837,109 +966,137 @@ class Music(commands.Cog):
         await ctx.send(embed=embed, view=view)
     
     @commands.hybrid_command(name='lyrics', description="Show lyrics of the currently playing song")
-    @app_commands.describe(romaji="Convert Japanese/Chinese/Korean lyrics to Romaji/Pinyin/Romanized form")
-    async def lyrics(self, ctx: commands.Context, romaji: bool = False):
+    async def lyrics(self, ctx: commands.Context):
         """Show lyrics of the currently playing song"""
         await ctx.defer()
-        guild_id = ctx.guild.id
-        
-        if guild_id not in self.now_playing:
-            return await ctx.send("❌ Nothing is currently playing!")
-            
-        song_title = self.now_playing[guild_id]['title']
-        
-        # Clean title to get better search results
-        import re
-        clean_title = song_title
-        clean_title = re.sub(r'\s*[\(\[][^)]*?(?:official|music|video|lyric|audio|hd|hq|version|edit|remix|ft\.|feat\.)[^)]*?[\)\]]', '', clean_title, flags=re.IGNORECASE)
-        clean_title = re.sub(r'\s*-\s*(?:official|music|video|lyric|audio|hd|hq|version|edit|remix|ft\.|feat\.).*$', '', clean_title, flags=re.IGNORECASE)
-        
-        # Remove Japanese/Chinese brackets and their contents
-        clean_title = re.sub(r'【[^】]*】', '', clean_title)
-        clean_title = re.sub(r'「[^」]*」', '', clean_title)
-        clean_title = re.sub(r'『[^』]*』', '', clean_title)
-        clean_title = re.sub(r'（[^）]*）', '', clean_title)
-        clean_title = re.sub(r'［[^］]*］', '', clean_title)
-        clean_title = clean_title.strip()
-        
-        # If cleaning results in empty string, fallback to original title
-        if not clean_title:
-            clean_title = song_title
-            
-        import aiohttp
-        import urllib.parse
-        url = f"https://lrclib.net/api/search?q={urllib.parse.quote(clean_title)}"
-        
         try:
+            guild_id = ctx.guild.id
+            
+            if guild_id not in self.now_playing:
+                return await ctx.send("❌ Nothing is currently playing!")
+                
+            song_title = self.now_playing[guild_id]['title']
+            
+            # Clean title to get better search results
+            import re
+            clean_title = song_title
+            clean_title = re.sub(r'\s*[\(\[][^)]*?(?:official|music|video|lyric|audio|hd|hq|version|edit|remix|ft\.|feat\.)[^)]*?[\)\]]', '', clean_title, flags=re.IGNORECASE)
+            clean_title = re.sub(r'\s*-\s*(?:official|music|video|lyric|audio|hd|hq|version|edit|remix|ft\.|feat\.).*$', '', clean_title, flags=re.IGNORECASE)
+            
+            # Remove Japanese/Chinese brackets and their contents
+            clean_title = re.sub(r'【[^】]*】', '', clean_title)
+            clean_title = re.sub(r'「[^」]*」', '', clean_title)
+            clean_title = re.sub(r'『[^』]*』', '', clean_title)
+            clean_title = re.sub(r'（[^）]*）', '', clean_title)
+            clean_title = re.sub(r'［[^］]*］', '', clean_title)
+            clean_title = clean_title.strip()
+            
+            # If cleaning results in empty string, fallback to original title
+            if not clean_title:
+                clean_title = song_title
+                
+            uploader = self.now_playing[guild_id].get('uploader', 'Unknown')
+            
+            # Build candidates
+            candidates = []
+            
+            # 1. Try splitting the cleaned title by '-'
+            parts = [p.strip() for p in re.split(r'\s*-\s*', clean_title)]
+            if len(parts) >= 2:
+                track, artist = parts[0], parts[1]
+                candidates.append({"type": "get", "artist": artist, "track": track})
+                candidates.append({"type": "get", "artist": track, "track": artist})
+                candidates.append({"type": "search", "q": f"{track} {artist}"})
+                candidates.append({"type": "search", "q": track})
+                
+            # 2. Try using clean uploader name and clean title
+            clean_uploader = re.sub(r'\s*-\s*Topic|\s+Official\s*.*$', '', uploader, flags=re.IGNORECASE).strip()
+            if clean_uploader and clean_uploader != "Unknown":
+                candidates.append({"type": "get", "artist": clean_uploader, "track": clean_title})
+                candidates.append({"type": "search", "q": f"{clean_title} {clean_uploader}"})
+                
+            # 3. Text search fallbacks
+            candidates.append({"type": "search", "q": clean_title})
+            candidates.append({"type": "search", "q": song_title})
+            
+            import urllib.parse
             headers = {"User-Agent": "KaelAbot-Discord-Bot/1.0.0 (https://github.com/AhmadF1kr1/Fiku-Bot)"}
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, headers=headers, timeout=10) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        if data:
-                            # Use the first result that has plain lyrics
-                            song_data = None
-                            for item in data:
-                                if item.get('plainLyrics'):
-                                    song_data = item
-                                    break
-                            
-                            if not song_data:
-                                # Fallback to first item if none have plain lyrics
-                                song_data = data[0]
-                                
-                            lyrics_text = song_data.get('plainLyrics')
-                            if not lyrics_text:
-                                return await ctx.send(f"❌ Could not find lyrics for **{song_title}**.")
-                                
-                            is_romanized = False
-                            if romaji:
-                                import urllib.parse
-                                # Replace newlines with ' | ' to preserve formatting
-                                formatted_lyrics = lyrics_text.replace('\n', ' | ')
-                                # Truncate to 5000 chars to avoid Google Translate limit
-                                query_text = formatted_lyrics[:5000]
-                                translit_url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=en&dt=rm&q={urllib.parse.quote(query_text)}"
-                                try:
-                                    tr_headers = {'User-Agent': 'Mozilla/5.0'}
-                                    async with session.get(translit_url, headers=tr_headers, timeout=10) as tr_response:
-                                        if tr_response.status == 200:
-                                            tr_data = await tr_response.json()
-                                            romanized_parts = []
-                                            if tr_data and tr_data[0]:
-                                                for item in tr_data[0]:
-                                                    if len(item) > 3 and item[3]:
-                                                        romanized_parts.append(item[3])
-                                            if romanized_parts:
-                                                romanized_text = "".join(romanized_parts)
-                                                # Split back by pipeline symbol and join with newlines
-                                                lines = re.split(r'\s*\|\s*', romanized_text)
-                                                lyrics_text = '\n'.join(lines).strip()
-                                                is_romanized = True
-                                except Exception as e:
-                                    print(f"Failed to romanize lyrics: {e}")
-                                    # We fall back to original lyrics
-
-                            # Prepare embed
-                            title = song_data.get('trackName', song_title)
-                            artist = song_data.get('artistName', 'Unknown Artist')
-                            
-                            # Handle length limits
-                            # Embed description character limit is 4096.
-                            if len(lyrics_text) > 4000:
-                                lyrics_text = lyrics_text[:3990] + "\n\n... (truncated)"
-                                
-                            embed = discord.Embed(
-                                title=f"🎶 Lyrics for: {title}" + (" (Romaji/Romanized)" if is_romanized else ""),
-                                description=f"**Artist:** {artist}\n\n{lyrics_text}",
-                                color=discord.Color.blue()
-                            )
-                            embed.set_footer(text="Lyrics provided by LRCLIB" + (" | Transliterated via Google Translate" if is_romanized else ""))
-                            return await ctx.send(embed=embed)
-                        else:
-                            return await ctx.send(f"❌ Could not find lyrics for **{song_title}**.")
+            song_data = None
+            
+            for cand in candidates:
+                try:
+                    if cand["type"] == "get":
+                        url = f"https://lrclib.net/api/get?artist_name={urllib.parse.quote(cand['artist'])}&track_name={urllib.parse.quote(cand['track'])}"
                     else:
-                        return await ctx.send("❌ Error fetching lyrics from the service. Please try again later.")
+                        url = f"https://lrclib.net/api/search?q={urllib.parse.quote(cand['q'])}"
+                        
+                    async with self.session.get(url, headers=headers, timeout=5) as response:
+                        if response.status == 200:
+                            res_data = await response.json()
+                            if cand["type"] == "get":
+                                if res_data and res_data.get('plainLyrics'):
+                                    song_data = res_data
+                                    break
+                            else:
+                                if res_data:
+                                    for item in res_data:
+                                        if item.get('plainLyrics'):
+                                            song_data = item
+                                            break
+                                    if not song_data and len(res_data) > 0:
+                                        song_data = res_data[0]
+                                    if song_data:
+                                        break
+                except Exception as e:
+                    print(f"Lyrics candidate fetch error: {e}")
+                    
+            if not song_data:
+                return await ctx.send(f"❌ Could not find lyrics for **{song_title}**.")
+                
+            lyrics_text = song_data.get('plainLyrics')
+            if not lyrics_text:
+                return await ctx.send(f"❌ Could not find lyrics for **{song_title}**.")
+            is_romanized = False
+            
+            # Auto-detect if lyrics contain Japanese characters to romanize
+            has_japanese = any(
+                0x3040 <= ord(char) <= 0x309F or  # Hiragana
+                0x30A0 <= ord(char) <= 0x30FF or  # Katakana
+                0x4E00 <= ord(char) <= 0x9FFF     # Kanji
+                for char in lyrics_text
+            )
+            
+            if has_japanese:
+                try:
+                    lines = []
+                    for line in lyrics_text.splitlines():
+                        if not line.strip():
+                            lines.append("")
+                            continue
+                        converted = self.kks.convert(line)
+                        line_romaji = " ".join(item['hepburn'] for item in converted)
+                        lines.append(line_romaji)
+                    lyrics_text = "\n".join(lines).strip()
+                    is_romanized = True
+                except Exception as e:
+                    print(f"Failed to romanize lyrics via pykakasi: {e}")
+    
+            # Prepare embed
+            title = song_data.get('trackName', song_title)
+            artist = song_data.get('artistName', 'Unknown Artist')
+            
+            # Handle length limits
+            if len(lyrics_text) > 4000:
+                lyrics_text = lyrics_text[:3990] + "\n\n... (truncated)"
+                
+            embed = discord.Embed(
+                title=f"🎶 Lyrics for: {title}" + (" (Romaji/Romanized)" if is_romanized else ""),
+                description=f"**Artist:** {artist}\n\n{lyrics_text}",
+                color=discord.Color.blue()
+            )
+            embed.set_footer(text="Lyrics provided by LRCLIB" + (" | Romanized via pykakasi" if is_romanized else ""))
+            return await ctx.send(embed=embed)
+            
         except Exception as e:
             import traceback
             traceback.print_exc()
@@ -993,8 +1150,7 @@ class Music(commands.Cog):
                 if voice_client and voice_client.channel and len(voice_client.channel.members) == 1:
                     await voice_client.disconnect()
                     guild_id = member.guild.id
-                    if guild_id in self.queue:
-                        self.queue[guild_id].clear()
+                    self.cleanup_guild(guild_id)
 
 async def setup(bot):
     await bot.add_cog(Music(bot))
